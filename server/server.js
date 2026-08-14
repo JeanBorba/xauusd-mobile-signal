@@ -2,20 +2,129 @@ import 'dotenv/config';
 import express from 'express';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
-const PORT=Number(process.env.PORT||10000), API_KEY=process.env.TWELVE_DATA_API_KEY||'', SYMBOL=process.env.MARKET_SYMBOL||'XAU/USD';
-const HISTORY_SIZE=Math.min(500,Math.max(60,Number(process.env.HISTORY_SIZE||200))), REFRESH_MS=Math.max(30000,Number(process.env.HISTORY_REFRESH_MS||60000));
-const VALID_TF=new Set(['5m','15m','30m','1h']), TF_MAP={'5m':'5min','15m':'15min','30m':'30min','1h':'1h'};
-const clients=new Set(), cache=new Map(); let upstream=null, reconnectTimer=null, backoff=1000;
-const app=express(); app.get('/health',(_q,r)=>r.json({ok:true,upstream:upstream?.readyState===WebSocket.OPEN?'connected':'disconnected',clients:clients.size,symbol:SYMBOL,time:new Date().toISOString()})); app.get('/',(_q,r)=>r.type('text').send('XAUUSD Mobile Signal server OK'));
-const server=http.createServer(app), wss=new WebSocketServer({server,path:'/stream'});
-const sec=tf=>({'5m':300,'15m':900,'30m':1800,'1h':3600}[tf]||300), bucket=(ms,s)=>Math.floor(ms/1000/s)*s*1000;
-const broadcast=o=>{const m=JSON.stringify(o);for(const c of clients)if(c.ws.readyState===WebSocket.OPEN)c.ws.send(m)};
-function parseHistory(j,tf){const rows=(j.values||[]).map(v=>({t:Date.parse(v.datetime+'Z'),o:+v.open,h:+v.high,l:+v.low,c:+v.close})).filter(v=>Number.isFinite(v.t)&&[v.o,v.h,v.l,v.c].every(Number.isFinite));const closed=rows.filter(v=>v.t<bucket(Date.now(),sec(tf))).slice(-HISTORY_SIZE);return{opens:closed.map(x=>x.o),highs:closed.map(x=>x.h),lows:closed.map(x=>x.l),closes:closed.map(x=>x.c),times:closed.map(x=>x.t),asOf:closed.length?new Date(closed.at(-1).t).toISOString():null}};
-async function history(tf){if(!API_KEY)throw Error('TWELVE_DATA_API_KEY ausente');const u=new URL('https://api.twelvedata.com/time_series');u.searchParams.set('symbol',SYMBOL);u.searchParams.set('interval',TF_MAP[tf]);u.searchParams.set('outputsize',String(HISTORY_SIZE+3));u.searchParams.set('apikey',API_KEY);const r=await fetch(u),j=await r.json();if(!r.ok||j.status==='error'||!Array.isArray(j.values))throw Error(j.message||`Twelve Data HTTP ${r.status}`);const c=parseHistory(j,tf);if(c.closes.length<40)throw Error(`Histórico insuficiente: ${c.closes.length}`);cache.set(tf,{candles:c,at:Date.now()});return c}
-async function ensure(tf){const h=cache.get(tf);return h&&Date.now()-h.at<REFRESH_MS?h.candles:history(tf)}
-const snap=(c,candles)=>c.ws.send(JSON.stringify({type:'snapshot',symbol:SYMBOL,source:'Twelve Data',price:c.lastPrice??null,candles,ts:Date.now()}));
-async function connect(){if(!API_KEY||upstream&&(upstream.readyState===WebSocket.OPEN||upstream.readyState===WebSocket.CONNECTING))return;const ws=new WebSocket(`wss://ws.twelvedata.com/v1/quotes/price?apikey=${encodeURIComponent(API_KEY)}`);upstream=ws;ws.on('open',()=>{backoff=1000;ws.send(JSON.stringify({action:'subscribe',params:{symbols:SYMBOL}}));broadcast({type:'server',status:'upstream_connected',ts:Date.now()})});ws.on('message',raw=>{try{const m=JSON.parse(raw);if(m.event==='price'&&Number.isFinite(+m.price)){const price=+m.price,t0=Number(m.timestamp||Date.now()),ts=t0<1e12?t0*1000:t0;for(const c of clients){c.lastPrice=price;if(c.ws.readyState===WebSocket.OPEN)c.ws.send(JSON.stringify({type:'tick',symbol:SYMBOL,price,ts,source:'Twelve Data'}))}}else if(m.event==='error'||m.status==='error')broadcast({type:'error',message:m.message||'Twelve Data erro',ts:Date.now()})}catch{}});ws.on('close',()=>{upstream=null;broadcast({type:'server',status:'upstream_disconnected',ts:Date.now()});clearTimeout(reconnectTimer);reconnectTimer=setTimeout(connect,backoff);backoff=Math.min(backoff*2,30000)});ws.on('error',e=>console.error('Upstream:',e.message))}
-setInterval(()=>{if(upstream?.readyState===WebSocket.OPEN)upstream.send(JSON.stringify({action:'heartbeat'}))},10000);
-setInterval(async()=>{for(const tf of new Set([...clients].map(c=>c.tf))){try{const c=await history(tf);for(const x of clients)if(x.tf===tf)snap(x,c)}catch(e){broadcast({type:'error',message:`Histórico ${tf}: ${e.message}`,ts:Date.now()})}}},REFRESH_MS);
-wss.on('connection',async ws=>{const c={ws,tf:'5m',lastPrice:null};clients.add(c);ws.on('message',async raw=>{try{const m=JSON.parse(raw);if(m.type==='config'&&VALID_TF.has(m.tf)){c.tf=m.tf;snap(c,await ensure(c.tf))}}catch(e){ws.send(JSON.stringify({type:'error',message:e.message,ts:Date.now()}))}});ws.on('close',()=>clients.delete(c));ws.on('error',()=>clients.delete(c));try{snap(c,await ensure('5m'))}catch(e){ws.send(JSON.stringify({type:'error',message:e.message,ts:Date.now()}))}connect()});
-server.listen(PORT,()=>console.log(`XAUUSD server listening on ${PORT}`));
+
+const PORT = Number(process.env.PORT || 10000);
+const SYMBOL = 'XAUUSD';
+const TF = { '5m': 300, '15m': 900, '30m': 1800, '1h': 3600 };
+const VALID_TF = new Set(Object.keys(TF));
+const HISTORY_SIZE = 200;
+const BROKERET_KEY = process.env.BROKERET_API_KEY || 'demo';
+const SIFTING_KEY = process.env.SIFTING_API_KEY || '';
+
+const app = express();
+app.get('/', (_q, r) => r.json({ service: 'xauusd-mobile-signal', ok: true, websocket: '/stream' }));
+app.get('/health', (_q, r) => r.json({
+  ok: true,
+  symbol: SYMBOL,
+  primary: feedName,
+  upstream: upstreamState,
+  clients: clients.size,
+  lastTick: lastTick ? new Date(lastTick.ts).toISOString() : null,
+  lastPrice: lastTick?.price ?? null,
+  serverTime: new Date().toISOString()
+}));
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server, path: '/stream' });
+const clients = new Set();
+let upstream = null;
+let upstreamState = 'disconnected';
+let feedName = 'brokeret-demo';
+let lastTick = null;
+let reconnectTimer = null;
+let backoff = 1000;
+
+function broadcast(msg) {
+  const raw = JSON.stringify(msg);
+  for (const c of clients) if (c.ws.readyState === WebSocket.OPEN) c.ws.send(raw);
+}
+function send(c, msg) { if (c.ws.readyState === WebSocket.OPEN) c.ws.send(JSON.stringify(msg)); }
+function bucket(ts, seconds) { return Math.floor(ts / 1000 / seconds) * seconds * 1000; }
+
+const candleStore = new Map();
+function updateCandle(price, ts) {
+  for (const [tf, sec] of Object.entries(TF)) {
+    const bt = bucket(ts, sec);
+    let c = candleStore.get(tf);
+    if (!c || c.t !== bt) {
+      c = { t: bt, o: price, h: price, l: price, c: price, closed: false };
+      candleStore.set(tf, c);
+    } else {
+      c.h = Math.max(c.h, price); c.l = Math.min(c.l, price); c.c = price;
+    }
+  }
+}
+function series(tf) {
+  const c = candleStore.get(tf);
+  return c ? [c] : [];
+}
+function emitTick(price, ts, source) {
+  lastTick = { price, ts, source };
+  updateCandle(price, ts);
+  broadcast({ type: 'tick', symbol: SYMBOL, price, ts, source, serverTs: Date.now() });
+}
+
+function connectBrokeret() {
+  if (upstream && [WebSocket.OPEN, WebSocket.CONNECTING].includes(upstream.readyState)) return;
+  feedName = BROKERET_KEY === 'demo' ? 'brokeret-demo' : 'brokeret';
+  upstreamState = 'connecting';
+  const ws = new WebSocket(`wss://feed.brokeret.com/ws?apikey=${encodeURIComponent(BROKERET_KEY)}`);
+  upstream = ws;
+  ws.on('open', () => {
+    backoff = 1000; upstreamState = 'connected';
+    ws.send(JSON.stringify({ action: 'subscribe', symbols: [SYMBOL] }));
+    broadcast({ type: 'server', status: 'upstream_connected', source: feedName, ts: Date.now() });
+  });
+  ws.on('message', raw => {
+    try {
+      const m = JSON.parse(raw);
+      if (m.type === 'heartbeat') ws.send(JSON.stringify({ action: 'pong' }));
+      if (m.type === 'ticks' && Array.isArray(m.data)) for (const x of m.data) {
+        if (x.s && x.s !== SYMBOL) continue;
+        const price = Number(x.p ?? x.last ?? x.b ?? x.Bid);
+        const bid = Number(x.b ?? x.Bid);
+        const ask = Number(x.a ?? x.Ask);
+        const ts0 = Number(x.t ?? x.Time ?? Date.now());
+        const ts = ts0 < 1e12 ? ts0 * 1000 : ts0;
+        if (Number.isFinite(price)) emitTick(price, ts, { name: feedName, bid, ask });
+      }
+      if (m.type === 'snapshot' && Array.isArray(m.data)) for (const x of m.data) {
+        if (x.s === SYMBOL) {
+          const price = Number(x.p ?? x.last ?? x.b ?? x.Bid);
+          const ts0 = Number(x.t ?? x.Time ?? Date.now());
+          if (Number.isFinite(price)) emitTick(price, ts0 < 1e12 ? ts0 * 1000 : ts0, { name: feedName, snapshot: true });
+        }
+      }
+      if (m.type === 'error') broadcast({ type: 'error', source: feedName, message: m.message || 'Brokeret error', ts: Date.now() });
+    } catch {}
+  });
+  ws.on('close', () => {
+    upstream = null; upstreamState = 'disconnected';
+    broadcast({ type: 'server', status: 'upstream_disconnected', source: feedName, ts: Date.now() });
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connectBrokeret, backoff);
+    backoff = Math.min(backoff * 2, 30000);
+  });
+  ws.on('error', err => console.error('Brokeret:', err.message));
+}
+
+setInterval(() => {
+  if (upstream?.readyState === WebSocket.OPEN) upstream.send(JSON.stringify({ action: 'ping' }));
+}, 30000);
+
+wss.on('connection', ws => {
+  const client = { ws, tf: '5m' }; clients.add(client);
+  send(client, { type: 'server', status: upstreamState, source: feedName, ts: Date.now() });
+  if (lastTick) send(client, { type: 'tick', symbol: SYMBOL, price: lastTick.price, ts: lastTick.ts, source: lastTick.source, serverTs: Date.now() });
+  ws.on('message', raw => {
+    try {
+      const m = JSON.parse(raw);
+      if (m.type === 'config' && VALID_TF.has(m.tf)) client.tf = m.tf;
+      if (m.type === 'ping') send(client, { type: 'pong', ts: Date.now() });
+    } catch {}
+  });
+  ws.on('close', () => clients.delete(client));
+  ws.on('error', () => clients.delete(client));
+});
+
+connectBrokeret();
+server.listen(PORT, () => console.log(`XAUUSD Mobile Signal listening on ${PORT}`));
