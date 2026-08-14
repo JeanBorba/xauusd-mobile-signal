@@ -1,0 +1,7 @@
+OFFICIAL App.js — use the App.js file from this same branch for execution.
+This TXT is a reference copy of the official mobile source. The executable file is App.js.
+
+IMPORTANT: Do not paste this header into App.js. Copy only the contents of App.js from the repository when using Expo.
+
+Repository: JeanBorba/xauusd-mobile-signal
+Branch: server-v1
