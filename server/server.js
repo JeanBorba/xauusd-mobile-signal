@@ -12,6 +12,7 @@ const MIN_HISTORY = 40;
 const BROKERET_KEY = process.env.BROKERET_API_KEY || 'demo';
 const TWELVE_KEY = process.env.TWELVE_DATA_API_KEY || '';
 const HISTORY_REFRESH_MS = 15 * 60 * 1000;
+const CLIENT_HISTORY_COOLDOWN_MS = 2 * 60 * 1000;
 const DXY_REFRESH_MS = 60 * 1000;
 const DXY_STALE_SEC = 120;
 const DXY_MAX_AGE_SEC = 600;
@@ -127,6 +128,8 @@ function replaceHistory(rows, source, reason) {
 }
 
 async function bootstrapHistory(reason = 'startup') {
+  const age = historyLoadedAt ? now() - historyLoadedAt : Infinity;
+  if (historyBootstrapState === 'ready' && age < CLIENT_HISTORY_COOLDOWN_MS) return candleStore.get('5m').length;
   if (historyPromise) return historyPromise;
   historyPromise = (async () => {
     historyBootstrapState = 'loading';
