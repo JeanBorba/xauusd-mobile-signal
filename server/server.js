@@ -1,13 +1,11 @@
-/* XAUUSD Mobile Signal - history sync engine v16
- * Historical OHLC is seeded from Twelve Data REST, persisted on disk,
- * and then kept live by Twelve Data WebSocket ticks.
- * The mobile client can reconnect at any time and immediately receive
- * the historical candles again; it never has to rebuild history from ticks.
+/* XAUUSD Mobile Signal - history sync engine v16 FREE-TIER SAFE
+ * One 5M historical bootstrap per server process; no periodic history polling.
+ * History remains in memory while the Render instance is alive and is sent to
+ * every reconnecting mobile client. A Render restart causes one fresh bootstrap.
+ * Live ticks continue through the existing Twelve Data WebSocket.
  */
 'use strict';
 require('dotenv').config();
-const fs = require('fs');
-const path = require('path');
 const http = require('http');
 const WebSocket = require('ws');
 
@@ -15,271 +13,242 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '0.0.0.0';
 const API_KEY = process.env.TWELVEDATA_API_KEY || '';
 const SYMBOL = 'XAU/USD';
-const HISTORY_LIMIT = Math.max(200, Math.min(2000, Number(process.env.HISTORY_LIMIT || 1000)));
-const CACHE_FILE = process.env.HISTORY_CACHE_FILE || path.join(process.cwd(), 'history-cache.json');
-const VALID_TF = new Set(['5m', '15m', '30m', '1h']);
-const TF_MIN = { '5m': 5, '15m': 15, '30m': 30, '1h': 60 };
-
+const TF = '5m';
+const TF_MS = 5 * 60 * 1000;
+const HISTORY_LIMIT = Math.max(100, Math.min(1000, Number(process.env.HISTORY_LIMIT || 1000)));
+const MIN_HISTORY = 40;
 const clients = new Set();
-const state = new Map();
-const lastTick = { price: null, bid: null, ask: null, ts: 0, source: 'Twelve Data WebSocket' };
+const history = [];
+let current = null;
+let historySource = 'none';
+let historyAsOf = null;
+let historyLoadedAt = 0;
 let td = null;
-let reconnectTimer = null;
-let seedInFlight = false;
-let lastSeedAt = 0;
-let cacheWriteTimer = null;
+let tdReconnectTimer = null;
+let bootstrapPromise = null;
+let lastTick = { price: null, bid: null, ask: null, ts: 0 };
+let wsSubscriptionAttempts = 0;
 
 function now() { return Date.now(); }
-function tfMs(tf) { return TF_MIN[tf] * 60000; }
-function bucket(ts, tf) { return Math.floor(ts / tfMs(tf)) * tfMs(tf); }
 function finite(v) { return Number.isFinite(Number(v)); }
 function num(v) { const n = Number(v); return Number.isFinite(n) ? n : null; }
-function emptyState() { return { candles: [], current: null, lastUpdate: 0, source: 'none', historyAsOf: null, historyLoadedAt: 0 }; }
-function ensureState(tf) { if (!state.has(tf)) state.set(tf, emptyState()); return state.get(tf); }
+function bucket(ts) { return Math.floor(ts / TF_MS) * TF_MS; }
+function isClosed(ts) { return Number(ts) < bucket(now()); }
 
-function closedOnly(rows, tf, at = now()) {
-  const cut = bucket(at, tf);
-  return rows.filter(r => Number.isFinite(r.t) && r.t < cut);
+function normalizeTwelve(values) {
+  const map = new Map();
+  for (const v of Array.isArray(values) ? values : []) {
+    const raw = String(v.datetime || '');
+    const t = Date.parse(raw.endsWith('Z') ? raw : raw + 'Z');
+    const row = { t, o: num(v.open), h: num(v.high), l: num(v.low), c: num(v.close) };
+    if (Number.isFinite(t) && [row.o, row.h, row.l, row.c].every(finite) && isClosed(t)) map.set(t, row);
+  }
+  return [...map.values()].sort((a, b) => a.t - b.t).slice(-HISTORY_LIMIT);
 }
 
-function normalizeHistorical(values) {
-  const rows = (values || []).map(v => ({
-    t: Date.parse(String(v.datetime).endsWith('Z') ? String(v.datetime) : String(v.datetime) + 'Z'),
-    o: num(v.open), h: num(v.high), l: num(v.low), c: num(v.close)
-  })).filter(x => Number.isFinite(x.t) && [x.o, x.h, x.l, x.c].every(finite));
-  const dedup = new Map();
-  for (const r of rows) dedup.set(r.t, r);
-  return [...dedup.values()].sort((a, b) => a.t - b.t);
-}
-
-async function tdFetch(pathname) {
+async function twelveHistory() {
   if (!API_KEY) throw new Error('TWELVEDATA_API_KEY ausente');
-  const r = await fetch('https://api.twelvedata.com' + pathname, { headers: { Authorization: 'apikey ' + API_KEY, Accept: 'application/json' } });
+  const url = 'https://api.twelvedata.com/time_series?symbol=' + encodeURIComponent(SYMBOL) + '&interval=' + TF + '&outputsize=' + HISTORY_LIMIT + '&order=asc&format=JSON';
+  const r = await fetch(url, { headers: { Authorization: 'apikey ' + API_KEY, Accept: 'application/json' } });
   if (!r.ok) throw new Error('Twelve Data HTTP ' + r.status);
   const j = await r.json();
-  if (j && j.status === 'error') throw new Error(j.message || 'Twelve Data error');
-  return j;
+  if (j?.status === 'error') throw new Error(j.message || 'Twelve Data error');
+  return normalizeTwelve(j?.values);
 }
 
-function loadCache() {
-  try {
-    if (!fs.existsSync(CACHE_FILE)) return false;
-    const raw = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    for (const tf of VALID_TF) {
-      const rows = Array.isArray(raw?.[tf]?.candles) ? raw[tf].candles : [];
-      if (!rows.length) continue;
-      const s = ensureState(tf);
-      s.candles = closedOnly(rows.map(r => ({ t: Number(r.t), o: Number(r.o), h: Number(r.h), l: Number(r.l), c: Number(r.c) })), tf).slice(-HISTORY_LIMIT);
-      s.source = 'disk-cache';
-      s.historyAsOf = s.candles.length ? s.candles[s.candles.length - 1].t : null;
-      s.historyLoadedAt = now();
-    }
-    return true;
-  } catch (e) {
-    console.error('[CACHE] load:', e.message);
-    return false;
-  }
-}
-
-function scheduleCacheWrite() {
-  clearTimeout(cacheWriteTimer);
-  cacheWriteTimer = setTimeout(() => {
-    try {
-      const out = {};
-      for (const tf of VALID_TF) out[tf] = { candles: ensureState(tf).candles.slice(-HISTORY_LIMIT), savedAt: now() };
-      const tmp = CACHE_FILE + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(out), 'utf8');
-      fs.renameSync(tmp, CACHE_FILE);
-    } catch (e) { console.error('[CACHE] write:', e.message); }
-  }, 500);
-}
-
-async function fetchYahooHistory(tf) {
-  const ranges = { '5m': '5d', '15m': '1mo', '30m': '1mo', '1h': '3mo' };
-  const range = ranges[tf] || '5d';
-  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?range=' + range + '&interval=' + tf + '&includePrePost=true&events=div%2Csplits';
-  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+async function yahooHistoryFallback() {
+  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?range=5d&interval=5m&includePrePost=true&events=div%2Csplits';
+  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'XAUUSD-Mobile-Signal/16' } });
   if (!r.ok) throw new Error('Yahoo HTTP ' + r.status);
   const j = await r.json();
   const result = j?.chart?.result?.[0];
   const ts = result?.timestamp || [];
   const q = result?.indicators?.quote?.[0];
   if (!Array.isArray(ts) || !q) throw new Error('Yahoo OHLC ausente');
-  const rows = [];
+  const map = new Map();
   for (let i = 0; i < ts.length; i++) {
-    const row = { t: Number(ts[i]) * 1000, o: num(q.open?.[i]), h: num(q.high?.[i]), l: num(q.low?.[i]), c: num(q.close?.[i]) };
-    if (Number.isFinite(row.t) && [row.o, row.h, row.l, row.c].every(finite)) rows.push(row);
+    const t = Number(ts[i]) * 1000;
+    const row = { t, o: num(q.open?.[i]), h: num(q.high?.[i]), l: num(q.low?.[i]), c: num(q.close?.[i]) };
+    if (Number.isFinite(t) && [row.o, row.h, row.l, row.c].every(finite) && isClosed(t)) map.set(t, row);
   }
-  return closedOnly(rows.sort((a, b) => a.t - b.t), tf).slice(-HISTORY_LIMIT);
+  return [...map.values()].sort((a, b) => a.t - b.t).slice(-HISTORY_LIMIT);
 }
 
-async function seed(tf) {
-  let rows = [];
-  let source = '';
-  try {
-    const j = await tdFetch('/time_series?symbol=' + encodeURIComponent(SYMBOL) + '&interval=' + tf + '&outputsize=' + HISTORY_LIMIT + '&order=asc&format=JSON');
-    rows = closedOnly(normalizeHistorical(j.values), tf).slice(-HISTORY_LIMIT);
-    if (rows.length >= 50) source = 'Twelve Data REST';
-  } catch (e) {
-    console.error('[SEED][Twelve Data]', tf, e.message);
-  }
-  if (rows.length < 50) {
-    rows = await fetchYahooHistory(tf);
-    source = 'Yahoo XAUUSD=X HIST';
-  }
-  if (rows.length < 50) throw new Error('histórico insuficiente: ' + rows.length + ' candles');
-  const s = ensureState(tf);
-  s.candles = rows;
-  s.source = source;
-  s.historyAsOf = rows[rows.length - 1].t;
-  s.historyLoadedAt = now();
-  s.current = null;
-  scheduleCacheWrite();
-  console.log('[SEED]', tf, rows.length, 'candles', source);
-}
-
-async function seedAll(force = false) {
-  if (seedInFlight) return;
-  if (!force && now() - lastSeedAt < 30000) return;
-  seedInFlight = true;
-  try {
-    for (const tf of VALID_TF) {
-      try { await seed(tf); }
-      catch (e) { const s = ensureState(tf); console.error('[SEED]', tf, e.message); if (s.candles.length) s.source = 'disk-cache'; }
+async function bootstrapHistory(force = false) {
+  if (bootstrapPromise && !force) return bootstrapPromise;
+  bootstrapPromise = (async () => {
+    let rows = [];
+    try {
+      rows = await twelveHistory();
+      if (rows.length >= MIN_HISTORY) historySource = 'Twelve Data REST';
+    } catch (e) { console.warn('[HISTORY] Twelve Data:', e.message); }
+    if (rows.length < MIN_HISTORY) {
+      try {
+        rows = await yahooHistoryFallback();
+        if (rows.length >= MIN_HISTORY) historySource = 'Yahoo XAUUSD=X fallback';
+      } catch (e) { console.warn('[HISTORY] Yahoo fallback:', e.message); }
     }
-    lastSeedAt = now();
-    broadcastAll();
-  } finally { seedInFlight = false; }
+    if (rows.length < MIN_HISTORY) throw new Error('histórico insuficiente: ' + rows.length + ' candles');
+    history.length = 0;
+    history.push(...rows);
+    historyAsOf = rows[rows.length - 1].t;
+    historyLoadedAt = now();
+    console.log('[HISTORY] bootstrap:', rows.length, 'candles | source:', historySource);
+    broadcast();
+    return rows.length;
+  })().finally(() => { bootstrapPromise = null; });
+  return bootstrapPromise;
+}
+
+function pushClosedCandle(row) {
+  if (!row || !isClosed(row.t)) return;
+  const idx = history.findIndex(x => x.t === row.t);
+  if (idx >= 0) history[idx] = row;
+  else history.push(row);
+  history.sort((a, b) => a.t - b.t);
+  while (history.length > HISTORY_LIMIT) history.shift();
+  historyAsOf = history.length ? history[history.length - 1].t : null;
 }
 
 function applyTick(price, ts, bid = null, ask = null) {
   if (!finite(price) || !Number.isFinite(ts)) return;
-  lastTick.price = Number(price);
-  lastTick.bid = finite(bid) ? Number(bid) : lastTick.bid;
-  lastTick.ask = finite(ask) ? Number(ask) : lastTick.ask;
-  lastTick.ts = ts;
-
-  for (const tf of VALID_TF) {
-    const s = ensureState(tf);
-    const b = bucket(ts, tf);
-    if (!s.current || s.current.t !== b) {
-      if (s.current && s.current.t < b) {
-        s.candles.push(s.current);
-        s.candles = s.candles.filter(x => x.t < b).slice(-HISTORY_LIMIT);
-        scheduleCacheWrite();
-      }
-      s.current = { t: b, o: Number(price), h: Number(price), l: Number(price), c: Number(price), closed: false };
-    } else {
-      s.current.c = Number(price);
-      s.current.h = Math.max(s.current.h, Number(price));
-      s.current.l = Math.min(s.current.l, Number(price));
-    }
-    s.lastUpdate = ts;
+  price = Number(price); ts = Number(ts);
+  lastTick = { price, bid: finite(bid) ? Number(bid) : lastTick.bid, ask: finite(ask) ? Number(ask) : lastTick.ask, ts };
+  const b = bucket(ts);
+  if (!current || current.t !== b) {
+    if (current && current.t < b) pushClosedCandle(current);
+    current = { t: b, o: price, h: price, l: price, c: price, closed: false };
+  } else {
+    current.c = price; current.h = Math.max(current.h, price); current.l = Math.min(current.l, price);
   }
-  broadcastAll();
+  broadcast();
 }
 
-function calcRSI(closes, p = 14) {
-  if (!Array.isArray(closes) || closes.length < p + 1) return null;
-  let gain = 0, loss = 0;
-  for (let i = 1; i <= p; i++) { const d = closes[i] - closes[i - 1]; if (d >= 0) gain += d; else loss -= d; }
-  let ag = gain / p, al = loss / p;
+function completed() { return history.filter(x => x.t < bucket(now())).slice(-HISTORY_LIMIT); }
+
+function rsi(closes, p = 14) {
+  if (closes.length < p + 1) return null;
+  let g = 0, l = 0;
+  for (let i = 1; i <= p; i++) { const d = closes[i] - closes[i - 1]; if (d >= 0) g += d; else l -= d; }
+  let ag = g / p, al = l / p;
   for (let i = p + 1; i < closes.length; i++) { const d = closes[i] - closes[i - 1]; ag = (ag * (p - 1) + Math.max(d, 0)) / p; al = (al * (p - 1) + Math.max(-d, 0)) / p; }
   if (al === 0) return 100; if (ag === 0) return 0;
   return +(100 - 100 / (1 + ag / al)).toFixed(2);
 }
 
-function calcEMA(closes, p = 20) {
-  if (!Array.isArray(closes) || closes.length < p) return null;
+function ema(closes, p = 20) {
+  if (closes.length < p) return null;
   let e = 0; for (let i = 0; i < p; i++) e += closes[i]; e /= p;
   const k = 2 / (p + 1); for (let i = p; i < closes.length; i++) e = closes[i] * k + e * (1 - k);
   return +e.toFixed(2);
 }
 
-function calcADX(highs, lows, closes, p = 14) {
-  if (!highs || highs.length !== lows.length || highs.length !== closes.length || highs.length < p * 2 + 1) return null;
-  const tr = [], plusDM = [], minusDM = [];
+function adx(highs, lows, closes, p = 14) {
+  if (highs.length < p * 2 + 1) return null;
+  const tr = [], pdm = [], mdm = [];
   for (let i = 1; i < highs.length; i++) {
     const up = highs[i] - highs[i - 1], down = lows[i - 1] - lows[i];
     tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
-    plusDM.push(up > down && up > 0 ? up : 0); minusDM.push(down > up && down > 0 ? down : 0);
+    pdm.push(up > down && up > 0 ? up : 0); mdm.push(down > up && down > 0 ? down : 0);
   }
-  let atr = 0, pdm = 0, mdm = 0; for (let i = 0; i < p; i++) { atr += tr[i]; pdm += plusDM[i]; mdm += minusDM[i]; }
-  atr /= p; pdm /= p; mdm /= p;
-  const dx = [], dip = [], dim = [];
-  const push = () => { const a = atr > 0 ? 100 * pdm / atr : 0, b = atr > 0 ? 100 * mdm / atr : 0; dip.push(a); dim.push(b); dx.push(a + b === 0 ? 0 : 100 * Math.abs(a - b) / (a + b)); };
-  push();
-  for (let i = p; i < tr.length; i++) { atr = (atr * (p - 1) + tr[i]) / p; pdm = (pdm * (p - 1) + plusDM[i]) / p; mdm = (mdm * (p - 1) + minusDM[i]) / p; push(); }
+  let atr = 0, plus = 0, minus = 0;
+  for (let i = 0; i < p; i++) { atr += tr[i]; plus += pdm[i]; minus += mdm[i]; }
+  atr /= p; plus /= p; minus /= p;
+  const dx = [];
+  const one = () => { const pi = atr ? 100 * plus / atr : 0, mi = atr ? 100 * minus / atr : 0; dx.push(pi + mi ? 100 * Math.abs(pi - mi) / (pi + mi) : 0); };
+  one();
+  for (let i = p; i < tr.length; i++) { atr = (atr * (p - 1) + tr[i]) / p; plus = (plus * (p - 1) + pdm[i]) / p; minus = (minus * (p - 1) + mdm[i]) / p; one(); }
   if (dx.length < p) return null;
-  let adx = 0; for (let i = 0; i < p; i++) adx += dx[i]; adx /= p; for (let i = p; i < dx.length; i++) adx = (adx * (p - 1) + dx[i]) / p;
-  const last = dip.length - 1;
-  return { adx: +adx.toFixed(1), plusDI: +dip[last].toFixed(1), minusDI: +dim[last].toFixed(1), atr: +atr.toFixed(3) };
+  let a = 0; for (let i = 0; i < p; i++) a += dx[i]; a /= p;
+  for (let i = p; i < dx.length; i++) a = (a * (p - 1) + dx[i]) / p;
+  return +a.toFixed(1);
 }
 
-function detectFVG(highs, lows, atr, times) {
-  if (!highs || highs.length < 5) return [];
-  const minGap = atr > 0 ? Math.max(0.12, atr * 0.10) : 0.20; const zones = [];
-  for (let i = 0; i < highs.length - 2; i++) {
-    if (lows[i + 2] > highs[i]) { const gap = lows[i + 2] - highs[i]; if (gap >= minGap) zones.push({ tipo: 'ALTA', inf: highs[i], sup: lows[i + 2], tam: gap, created: times[i + 2] }); }
-    if (highs[i + 2] < lows[i]) { const gap = lows[i] - highs[i + 2]; if (gap >= minGap) zones.push({ tipo: 'BAIXA', inf: highs[i + 2], sup: lows[i], tam: gap, created: times[i + 2] }); }
+function fvg(rows) {
+  if (rows.length < 3) return [];
+  const out = [];
+  for (let i = 0; i < rows.length - 2; i++) {
+    if (rows[i + 2].l > rows[i].h) out.push({ tipo: 'ALTA', inf: rows[i].h, sup: rows[i + 2].l, created: rows[i + 2].t });
+    if (rows[i + 2].h < rows[i].l) out.push({ tipo: 'BAIXA', inf: rows[i + 2].h, sup: rows[i].l, created: rows[i + 2].t });
   }
-  return zones.filter(z => { const idx = times.indexOf(z.created); if (idx < 0) return true; for (let j = idx + 1; j < lows.length; j++) { if (z.tipo === 'ALTA' && lows[j] <= z.inf) return false; if (z.tipo === 'BAIXA' && highs[j] >= z.sup) return false; } return true; }).slice(-10);
+  return out.filter(z => { for (const r of rows) { if (r.t <= z.created) continue; if (z.tipo === 'ALTA' && r.l <= z.inf) return false; if (z.tipo === 'BAIXA' && r.h >= z.sup) return false; } return true; }).slice(-10);
 }
 
-function compute(tf) {
-  const s = ensureState(tf);
-  const completed = s.candles.filter(x => x && x.t < bucket(now(), tf)).slice(-HISTORY_LIMIT);
-  const opens = completed.map(x => x.o), highs = completed.map(x => x.h), lows = completed.map(x => x.l), closes = completed.map(x => x.c), times = completed.map(x => x.t);
-  const adx = calcADX(highs, lows, closes, 14);
-  const age = lastTick.ts ? Math.max(0, (now() - lastTick.ts) / 1000) : Infinity;
-  const ohlcAge = times.length ? Math.max(0, (now() - times[times.length - 1]) / 1000) : Infinity;
+function marketState() {
+  const rows = completed();
+  const closes = rows.map(x => x.c), highs = rows.map(x => x.h), lows = rows.map(x => x.l);
   return {
-    candles: completed.length, historyRequired: 40, historyReady: completed.length >= 40,
-    historySource: s.source, historyAsOf: s.historyAsOf, historyLoadedAt: s.historyLoadedAt,
-    price: lastTick.price, bid: lastTick.bid ?? lastTick.price, ask: lastTick.ask ?? lastTick.price,
-    ts: lastTick.ts, priceAgeSec: age, ohlcAgeSec: ohlcAge, opens, highs, lows, closes, times,
-    RSI: calcRSI(closes), EMA20: calcEMA(closes), ADX: adx?.adx ?? null, plusDI: adx?.plusDI ?? null,
-    minusDI: adx?.minusDI ?? null, ATR: adx?.atr ?? null, FVG: detectFVG(highs, lows, adx?.atr || 0, times), serverTime: now()
+    type: 'market_state', symbol: SYMBOL, tf: TF, serverTime: now(),
+    price: lastTick.price, bid: lastTick.bid ?? lastTick.price, ask: lastTick.ask ?? lastTick.price, ts: lastTick.ts,
+    priceAgeSec: lastTick.ts ? (now() - lastTick.ts) / 1000 : null,
+    candles: rows.length, historyRequired: MIN_HISTORY, historyReady: rows.length >= MIN_HISTORY,
+    historySource, historyAsOf, historyLoadedAt,
+    RSI: rsi(closes), EMA20: ema(closes), ADX: adx(highs, lows, closes), FVG: fvg(rows)
   };
 }
 
-function send(ws, obj) { try { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); } catch (_) {} }
-function sendHistory(ws) {
-  const tf = ws.tf || '5m', c = compute(tf);
-  send(ws, { type: 'history', tf, candles: c.closes.map((close, i) => ({ t: c.times[i], o: c.opens[i], h: c.highs[i], l: c.lows[i], c: close, closed: true })), count: c.candles, required: c.historyRequired, ready: c.historyReady, source: c.historySource, asOf: c.historyAsOf });
+function historyPayload() {
+  const rows = completed();
+  return { type: 'history', symbol: SYMBOL, tf: TF, candles: rows.map(x => ({ ...x, closed: true })), count: rows.length, required: MIN_HISTORY, ready: rows.length >= MIN_HISTORY, source: historySource, asOf: historyAsOf, loadedAt: historyLoadedAt };
 }
-function sendState(ws) { send(ws, { type: 'market_state', ...compute(ws.tf || '5m') }); }
-function broadcastAll() { for (const ws of clients) { sendHistory(ws); sendState(ws); } }
 
-function connectTD() {
-  if (!API_KEY) { console.warn('[TD] sem chave; cache histórico continua disponível.'); return; }
+function send(ws, payload) { if (ws.readyState === WebSocket.OPEN) { try { ws.send(JSON.stringify(payload)); } catch (_) {} } }
+function sendClient(ws) { send(ws, historyPayload()); send(ws, marketState()); }
+function broadcast() { for (const ws of clients) sendClient(ws); }
+
+function connectTwelveData() {
+  if (!API_KEY) { console.warn('[TD] TWELVEDATA_API_KEY ausente; histórico pode usar fallback.'); return; }
   try { td?.close(); } catch (_) {}
   td = new WebSocket('wss://ws.twelvedata.com/v1/quotes/price?apikey=' + encodeURIComponent(API_KEY));
-  td.on('open', () => { console.log('[TD] conectado'); td.send(JSON.stringify({ action: 'subscribe', params: { symbols: SYMBOL } })); });
-  td.on('message', raw => { try { const m = JSON.parse(raw.toString()); if (m.event === 'price' && m.price != null) { const ts0 = Number(m.timestamp || m.ts || Math.floor(now() / 1000)); applyTick(Number(m.price), ts0 < 1e12 ? ts0 * 1000 : ts0, m.bid, m.ask); } } catch (e) { console.error('[TD] parse', e.message); } });
-  td.on('close', () => { console.warn('[TD] desconectado'); clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connectTD, 3000); });
+  td.on('open', () => {
+    wsSubscriptionAttempts++;
+    console.log('[TD] WebSocket conectado; assinatura #' + wsSubscriptionAttempts);
+    td.send(JSON.stringify({ action: 'subscribe', params: { symbols: SYMBOL } }));
+  });
+  td.on('message', raw => {
+    try {
+      const m = JSON.parse(raw.toString());
+      if (m.event === 'price' && finite(m.price)) {
+        const t = Number(m.timestamp || m.ts || Math.floor(now() / 1000));
+        applyTick(Number(m.price), t < 1e12 ? t * 1000 : t, m.bid, m.ask);
+      }
+    } catch (e) { console.error('[TD] parse:', e.message); }
+  });
   td.on('error', e => console.error('[TD]', e.message));
+  td.on('close', () => { clearTimeout(tdReconnectTimer); tdReconnectTimer = setTimeout(connectTwelveData, 5000); });
 }
 
 const server = http.createServer((req, res) => {
   if (req.url === '/health') {
-    const five = compute('5m'); res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    return res.end(JSON.stringify({ ok: true, feed: lastTick.ts ? 'online' : 'waiting', price: lastTick.price, ageSec: lastTick.ts ? (now() - lastTick.ts) / 1000 : null, history: { count: five.candles, required: five.historyRequired, ready: five.historyReady, source: five.historySource, asOf: five.historyAsOf } }));
+    const m = marketState();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify({ ok: true, feed: lastTick.ts ? 'online' : 'waiting', price: lastTick.price, ageSec: m.priceAgeSec, history: { count: m.candles, required: m.historyRequired, ready: m.historyReady, source: historySource, asOf: historyAsOf, loadedAt: historyLoadedAt }, websocketSubscriptionsSinceStart: wsSubscriptionAttempts }));
   }
-  res.writeHead(404); res.end();
+  if (req.url === '/history') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    return res.end(JSON.stringify(historyPayload()));
+  }
+  res.writeHead(404); res.end('Not found');
 });
 
 const wss = new WebSocket.Server({ server, path: '/stream' });
 wss.on('connection', ws => {
-  clients.add(ws); ws.tf = '5m';
-  send(ws, { type: 'hello', serverTime: now(), symbol: SYMBOL, availableTf: [...VALID_TF], historyLimit: HISTORY_LIMIT });
-  sendHistory(ws); sendState(ws);
-  ws.on('message', raw => { try { const m = JSON.parse(raw.toString()); if ((m.type === 'config' || m.type === 'set_tf') && VALID_TF.has(m.tf)) { ws.tf = m.tf; sendHistory(ws); sendState(ws); } else if (m.type === 'ping') send(ws, { type: 'pong', serverTime: now() }); else if (m.type === 'refresh_history') seedAll(true).then(() => { sendHistory(ws); sendState(ws); }); } catch (_) {} });
+  clients.add(ws);
+  send(ws, { type: 'hello', symbol: SYMBOL, tf: TF, serverTime: now(), historyLimit: HISTORY_LIMIT });
+  sendClient(ws);
+  ws.on('message', raw => {
+    try {
+      const m = JSON.parse(raw.toString());
+      if (m.type === 'ping') send(ws, { type: 'pong', serverTime: now() });
+      else if (m.type === 'config' || m.type === 'set_tf') sendClient(ws);
+      else if (m.type === 'refresh_history') bootstrapHistory(true).then(() => sendClient(ws)).catch(e => send(ws, { type: 'error', message: e.message }));
+    } catch (_) {}
+  });
   ws.on('close', () => clients.delete(ws));
 });
 
-loadCache();
-server.listen(PORT, HOST, () => console.log('[SERVER] listening on ' + HOST + ' | history limit=' + HISTORY_LIMIT));
-seedAll(true).catch(e => console.error('[SEED]', e.message));
-connectTD();
-setInterval(() => seedAll(false), 15 * 60 * 1000).unref();
+server.listen(PORT, HOST, async () => {
+  console.log('[SERVER] listening on ' + HOST + ':' + PORT + ' | TF=' + TF + ' | HISTORY_LIMIT=' + HISTORY_LIMIT);
+  try { await bootstrapHistory(false); } catch (e) { console.error('[HISTORY] bootstrap failed:', e.message); }
+  connectTwelveData();
+});
