@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: xauusd-mobile-signal
+    runtime: node
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: TWELVEDATA_API_KEY
+        sync: false
+      - key: HISTORY_LIMIT
+        value: "1000"
