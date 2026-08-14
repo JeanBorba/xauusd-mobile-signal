@@ -7,11 +7,9 @@ services:
     startCommand: npm start
     healthCheckPath: /health
     envVars:
+      - key: BROKERET_API_KEY
+        sync: false
       - key: TWELVE_DATA_API_KEY
         sync: false
-      - key: MARKET_SYMBOL
-        value: XAU/USD
       - key: HISTORY_SIZE
-        value: "200"
-      - key: HISTORY_REFRESH_MS
-        value: "60000"
+        value: "500"
