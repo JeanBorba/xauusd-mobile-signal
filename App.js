@@ -18,15 +18,16 @@ export default function App() {
   const [lastError, setLastError] = useState('');
   const [candles, setCandles] = useState([]);
   const [clock, setClock] = useState(new Date());
-  const [market, setMarket] = useState({ RSI:null, ADX:null, EMA20:null, FVG:[], historyReady:false, historyRequired:40, historySource:null, historyState:'waiting', historyAsOf:null, dxy:null });
+  const [market, setMarket] = useState({ RSI:null, ADX:null, EMA20:null, FVG:[], historyReady:false, historyRequired:40, historySource:null, historyState:'waiting', historyAsOf:null, dxy:null, upstream:'disconnected' });
 
   const connect = useCallback(() => {
     if (wsRef.current) { try { wsRef.current.close(); } catch (_) {} }
     setStatus('connecting'); setLastError('');
     const ws = new WebSocket(WS_URL); wsRef.current = ws;
     ws.onopen = () => {
-      setStatus('online');
+      setStatus('connecting');
       ws.send(JSON.stringify({ type:'config', tf:'5m' }));
+      ws.send(JSON.stringify({ type:'refresh_history' }));
       clearInterval(pingRef.current);
       pingRef.current = setInterval(() => {
         if (ws.readyState === 1) { pingSentRef.current = Date.now(); ws.send(JSON.stringify({ type:'ping' })); }
@@ -35,12 +36,14 @@ export default function App() {
     ws.onmessage = e => {
       try {
         const m = JSON.parse(e.data);
-        if (m.type === 'market_state') {
+        if (m.type === 'server') {
+          if (m.status === 'connected') setStatus('online');
+        } else if (m.type === 'market_state') {
           const p=Number(m.price), b=Number(m.bid), a=Number(m.ask);
           if(Number.isFinite(p))setPrice(p); if(Number.isFinite(b))setBid(b); if(Number.isFinite(a))setAsk(a);
           if(m.ts)setTickTime(new Date(Number(m.ts)).toLocaleTimeString());
-          setMarket({RSI:Number.isFinite(Number(m.RSI))?Number(m.RSI):null,ADX:Number.isFinite(Number(m.ADX))?Number(m.ADX):null,EMA20:Number.isFinite(Number(m.EMA20))?Number(m.EMA20):null,FVG:Array.isArray(m.FVG)?m.FVG:[],historyReady:!!m.historyReady,historyRequired:Number(m.historyRequired)||40,historySource:m.historySource||null,historyState:m.historyState||'waiting',historyAsOf:m.historyAsOf||null,dxy:m.dxy||null});
-          if(m.upstream==='connected')setStatus('online');
+          setMarket({RSI:Number.isFinite(Number(m.RSI))?Number(m.RSI):null,ADX:Number.isFinite(Number(m.ADX))?Number(m.ADX):null,EMA20:Number.isFinite(Number(m.EMA20))?Number(m.EMA20):null,FVG:Array.isArray(m.FVG)?m.FVG:[],historyReady:!!m.historyReady,historyRequired:Number(m.historyRequired)||40,historySource:m.historySource||null,historyState:m.historyState||'waiting',historyAsOf:m.historyAsOf||null,dxy:m.dxy||null,upstream:m.upstream||'disconnected'});
+          setStatus(m.upstream==='connected'?'online':'connecting');
         } else if (m.type === 'tick') {
           const p=Number(m.price),b=Number(m.source?.bid),a=Number(m.source?.ask);if(Number.isFinite(p))setPrice(p);if(Number.isFinite(b))setBid(b);if(Number.isFinite(a))setAsk(a);if(m.ts)setTickTime(new Date(Number(m.ts)).toLocaleTimeString());
         } else if (m.type === 'history') {
