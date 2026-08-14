@@ -94,18 +94,48 @@ function scheduleCacheWrite() {
   }, 500);
 }
 
+async function fetchYahooHistory(tf) {
+  const ranges = { '5m': '5d', '15m': '1mo', '30m': '1mo', '1h': '3mo' };
+  const range = ranges[tf] || '5d';
+  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/XAUUSD=X?range=' + range + '&interval=' + tf + '&includePrePost=true&events=div%2Csplits';
+  const r = await fetch(url, { headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0' } });
+  if (!r.ok) throw new Error('Yahoo HTTP ' + r.status);
+  const j = await r.json();
+  const result = j?.chart?.result?.[0];
+  const ts = result?.timestamp || [];
+  const q = result?.indicators?.quote?.[0];
+  if (!Array.isArray(ts) || !q) throw new Error('Yahoo OHLC ausente');
+  const rows = [];
+  for (let i = 0; i < ts.length; i++) {
+    const row = { t: Number(ts[i]) * 1000, o: num(q.open?.[i]), h: num(q.high?.[i]), l: num(q.low?.[i]), c: num(q.close?.[i]) };
+    if (Number.isFinite(row.t) && [row.o, row.h, row.l, row.c].every(finite)) rows.push(row);
+  }
+  return closedOnly(rows.sort((a, b) => a.t - b.t), tf).slice(-HISTORY_LIMIT);
+}
+
 async function seed(tf) {
-  const j = await tdFetch('/time_series?symbol=' + encodeURIComponent(SYMBOL) + '&interval=' + tf + '&outputsize=' + HISTORY_LIMIT + '&order=asc&format=JSON');
-  const rows = closedOnly(normalizeHistorical(j.values).slice(-HISTORY_LIMIT), tf);
+  let rows = [];
+  let source = '';
+  try {
+    const j = await tdFetch('/time_series?symbol=' + encodeURIComponent(SYMBOL) + '&interval=' + tf + '&outputsize=' + HISTORY_LIMIT + '&order=asc&format=JSON');
+    rows = closedOnly(normalizeHistorical(j.values), tf).slice(-HISTORY_LIMIT);
+    if (rows.length >= 50) source = 'Twelve Data REST';
+  } catch (e) {
+    console.error('[SEED][Twelve Data]', tf, e.message);
+  }
+  if (rows.length < 50) {
+    rows = await fetchYahooHistory(tf);
+    source = 'Yahoo XAUUSD=X HIST';
+  }
   if (rows.length < 50) throw new Error('histórico insuficiente: ' + rows.length + ' candles');
   const s = ensureState(tf);
   s.candles = rows;
-  s.source = 'Twelve Data REST';
+  s.source = source;
   s.historyAsOf = rows[rows.length - 1].t;
   s.historyLoadedAt = now();
   s.current = null;
   scheduleCacheWrite();
-  console.log('[SEED]', tf, rows.length, 'candles');
+  console.log('[SEED]', tf, rows.length, 'candles', source);
 }
 
 async function seedAll(force = false) {
