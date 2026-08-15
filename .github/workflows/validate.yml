@@ -1,0 +1,33 @@
+name: Validate OCI Doto Bridge V31
+
+on:
+  push:
+    branches: [oci-doto-bridge-v31]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.13.0
+      - name: Validate shell and JavaScript
+        run: |
+          set -euo pipefail
+          bash -n install.sh run.sh set-token.sh status.sh
+          node --check extension/background.js
+          node --check extension/relay.js
+          node --check extension/main.js
+          python -m json.tool extension/manifest.json >/dev/null
+      - name: Validate Terraform
+        run: |
+          set -euo pipefail
+          terraform fmt -check -diff
+          terraform init -backend=false -input=false
+          terraform validate

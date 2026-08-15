@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "XAUUSD Mobile Signal — Doto Cloud Bridge V31",
+  "version": "31.0.0",
+  "description": "Encaminha apenas ticks/candles XAUUSD e XAUUSD_OTC da sessão Doto autenticada ao servidor do XAUUSD Mobile Signal.",
+  "permissions": [],
+  "host_permissions": [
+    "https://xauusd-mobile-signal.onrender.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://client.doto.com/*"
+      ],
+      "js": [
+        "relay.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://client.doto.com/*"
+      ],
+      "js": [
+        "main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ]
+}
