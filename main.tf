@@ -10,11 +10,6 @@ terraform {
 
 provider "oci" {}
 
-variable "tenancy_ocid" {
-  description = "OCID da tenancy Oracle Cloud."
-  type        = string
-}
-
 variable "compartment_ocid" {
   description = "OCID do compartment onde a VM será criada."
   type        = string
@@ -32,7 +27,7 @@ variable "instance_name" {
 }
 
 data "oci_identity_availability_domains" "ads" {
-  compartment_id = var.tenancy_ocid
+  compartment_id = var.compartment_ocid
 }
 
 data "oci_core_images" "ubuntu" {
