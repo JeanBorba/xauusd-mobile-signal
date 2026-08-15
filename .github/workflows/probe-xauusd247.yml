@@ -1,0 +1,35 @@
+name: Probe XAUUSD247 No-Key Sources
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-xauusd247.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Probe TradingView scanner for 24/7 gold CFDs
+        run: |
+          set -u
+          for market in forex cfd; do
+            echo "===== scanner $market ====="
+            curl -L --silent --show-error --max-time 20 \
+              -H 'Content-Type: application/json' \
+              -H 'Origin: https://www.tradingview.com' \
+              -A 'Mozilla/5.0' \
+              --data '{"symbols":{"tickers":["THINKMARKETS:XAUUSD247","VANTAGE:XAUUSD247","OANDA:XAUUSD"],"query":{"types":[]}},"columns":["close","bid","ask","update_mode","pricescale","minmov","description","exchange","type","subtype"]}' \
+              "https://scanner.tradingview.com/${market}/scan" | tee "/tmp/${market}.json"
+            echo
+          done
+          python - <<'PY'
+          import json, pathlib
+          for f in ['/tmp/forex.json','/tmp/cfd.json']:
+              try:
+                  j=json.loads(pathlib.Path(f).read_text())
+                  print(f, json.dumps(j, ensure_ascii=False)[:6000])
+              except Exception as e:
+                  print(f, e)
+          PY
