@@ -84,6 +84,13 @@ function isWeekendMode(date = new Date()) {
   return day === 6 || (day === 5 && minutes >= 16 * 60) || (day === 0 && minutes < 19 * 60);
 }
 function marketMode(date = new Date()) { return isWeekendMode(date) ? 'OTC' : 'NORMAL'; }
+function otcWindowStartMs(date = new Date()) {
+  const { day, minutes } = brtParts(date);
+  if (day === 5 && minutes >= 16 * 60) return date.getTime() - (minutes - 16 * 60) * 60000;
+  if (day === 6) return date.getTime() - (24 * 60 - (16 * 60 - minutes)) * 60000;
+  if (day === 0 && minutes < 19 * 60) return date.getTime() - (48 * 60 - (16 * 60 - minutes)) * 60000;
+  return date.getTime() - 36 * 3600000;
+}
 
 function sessionActive(name, date = new Date()) {
   const { minutes:m } = brtParts(date);
@@ -486,7 +493,7 @@ app.post('/ingest/doto/history',(q,r)=>{
   if(symbol!==expected) return r.status(400).json({ok:false,error:'wrong symbol',expected});
   const rows=[];
   for(const raw of (Array.isArray(body.candles)?body.candles:[]).slice(-HISTORY_SIZE)) {
-    let t=n(raw.t??raw.time??raw.ts); if(!finite(t)) continue; if(t<1e12)t*=1000; if(marketMode(new Date(t))!==mode) continue;
+    let t=n(raw.t??raw.time??raw.ts); if(!finite(t)) continue; if(t<1e12)t*=1000; if(marketMode(new Date(t))!==mode) continue; if(mode==='OTC' && t < otcWindowStartMs()) continue;
     const o=n(raw.o??raw.open),h=n(raw.h??raw.high),l=n(raw.l??raw.low),c=n(raw.c??raw.close);
     if(![o,h,l,c].every(finite)||Math.min(o,h,l,c)<=0) continue;
     rows.push({t:bucket(t,300),o,h,l,c,volume:n(raw.volume??raw.tick_volume)??0,delta:n(raw.delta),closed:true,marketSource:mode==='OTC'?'OTC':'OFFICIAL'});
