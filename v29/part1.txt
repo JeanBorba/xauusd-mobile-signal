@@ -1,0 +1,220 @@
+      if (z.tipo === 'ALTA' && lows[j] <= z.inf) return false;
+      if (z.tipo === 'BAIXA' && highs[j] >= z.sup) return false;
+    }
+    return true;
+  }).slice(-10);
+}
+function detectSwingPoints(candles, left = 2, right = 2) {
+  const highs = [], lows = [];
+  if (!Array.isArray(candles) || candles.length < left + right + 3) return { highs, lows };
+  for (let i = left; i < candles.length - right; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= left; j++) {
+      if (candles[i].h <= candles[i - j].h) isHigh = false;
+      if (candles[i].l >= candles[i - j].l) isLow = false;
+    }
+    for (let j = 1; j <= right; j++) {
+      if (candles[i].h < candles[i + j].h) isHigh = false;
+      if (candles[i].l > candles[i + j].l) isLow = false;
+    }
+    if (isHigh) highs.push({ index: i, price: candles[i].h, time: candles[i].t });
+    if (isLow) lows.push({ index: i, price: candles[i].l, time: candles[i].t });
+  }
+  return { highs, lows };
+}
+function detectStructure(candles) {
+  if (!Array.isArray(candles) || candles.length < 12) {
+    return { bos: null, choch: null, event: null, events: [], ob: null, obs: [], trend: null, swings: { highs: [], lows: [] } };
+  }
+
+  const left = 2, right = 2;
+  const confirmedHighs = [];
+  const confirmedLows = [];
+  const brokenHighs = new Set();
+  const brokenLows = new Set();
+  const obCandidates = [];
+  const usedObSources = new Set();
+  const events = [];
+  let trend = null;
+  let lastEvent = null;
+
+  function isSwingHigh(idx) {
+    if (idx < left || idx + right >= candles.length) return false;
+    for (let j = 1; j <= left; j++) if (candles[idx].h <= candles[idx - j].h) return false;
+    for (let j = 1; j <= right; j++) if (candles[idx].h < candles[idx + j].h) return false;
+    return true;
+  }
+  function isSwingLow(idx) {
+    if (idx < left || idx + right >= candles.length) return false;
+    for (let j = 1; j <= left; j++) if (candles[idx].l >= candles[idx - j].l) return false;
+    for (let j = 1; j <= right; j++) if (candles[idx].l > candles[idx + j].l) return false;
+    return true;
+  }
+
+  /* Causalidade: o swing de índice s só entra no conjunto de níveis
+     disponíveis depois de duas velas posteriores terem fechado.
+     Assim nenhum rompimento usa informação futura. */
+  for (let i = 0; i < candles.length; i++) {
+    const s = i - right - 1;
+    if (s >= left) {
+      if (isSwingHigh(s)) confirmedHighs.push({ index: s, price: candles[s].h, time: candles[s].t });
+      if (isSwingLow(s)) confirmedLows.push({ index: s, price: candles[s].l, time: candles[s].t });
+    }
+
+    const sh = confirmedHighs.filter(x => !brokenHighs.has(x.index)).slice(-1)[0] || null;
+    const sl = confirmedLows.filter(x => !brokenLows.has(x.index)).slice(-1)[0] || null;
+    const c = candles[i];
+    const bullBreak = !!sh && c.c > sh.price;
+    const bearBreak = !!sl && c.c < sl.price;
+    let side = null, swing = null;
+
+    if (bullBreak && bearBreak) {
+      const up = c.c - sh.price;
+      const down = sl.price - c.c;
+      if (up >= down) { side = 'ALTA'; swing = sh; }
+      else { side = 'BAIXA'; swing = sl; }
+    } else if (bullBreak) {
+      side = 'ALTA'; swing = sh;
+    } else if (bearBreak) {
+      side = 'BAIXA'; swing = sl;
+    }
+    if (!side || !swing) continue;
+
+    if (side === 'ALTA') brokenHighs.add(swing.index);
+    else brokenLows.add(swing.index);
+
+    const type = trend && trend !== side ? 'CHoCH' : 'BOS';
+    const event = { type, side, price: c.c, time: c.t, level: swing.price, index: i };
+    events.push(event);
+    lastEvent = event;
+    trend = side;
+
+    const from = Math.max(0, i - 12);
+    for (let j = i - 1; j >= from; j--) {
+      const opposite = side === 'ALTA' ? candles[j].c < candles[j].o : candles[j].c > candles[j].o;
+      if (opposite && !usedObSources.has(j)) {
+        obCandidates.push({
+          tipo: side,
+          inf: candles[j].l,
+          sup: candles[j].h,
+          price: candles[j].c,
+          created: c.t,
+          sourceIndex: j,
+          breakIndex: i
+        });
+        usedObSources.add(j);
+        break;
+      }
+    }
+  }
+
+  const activeObs = obCandidates.filter(z => {
+    for (let j = z.breakIndex + 1; j < candles.length; j++) {
+      if (z.tipo === 'ALTA' && candles[j].l <= z.inf) return false;
+      if (z.tipo === 'BAIXA' && candles[j].h >= z.sup) return false;
+    }
+    return true;
+  });
+
+  const obs = activeObs.slice(-10);
+  const latestOb = obs.length ? obs[obs.length - 1] : null;
+  return {
+    bos: lastEvent?.type === 'BOS' ? lastEvent.side : null,
+    choch: lastEvent?.type === 'CHoCH' ? lastEvent.side : null,
+    event: lastEvent,
+    events: events.slice(-20),
+    ob: latestOb,
+    obs,
+    trend,
+    swings: { highs: confirmedHighs.slice(-10), lows: confirmedLows.slice(-10) }
+  };
+}
+function calcVWAP(candles) {
+  if (!Array.isArray(candles) || !candles.length) return null;
+  const now = new Date();
+  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const day = candles.filter(c => c.t >= dayStart && c.closed !== false);
+  if (!day.length) return null;
+  let pv = 0, vol = 0, hasRealVolume = false;
+  day.forEach(c => {
+    const typical = (c.h + c.l + c.c) / 3;
+    const v = finite(c.volume) && c.volume > 0 ? c.volume : 1;
+    if (finite(c.volume) && c.volume > 0) hasRealVolume = true;
+    pv += typical * v;
+    vol += v;
+  });
+  if (!vol) return null;
+  return { value: pv / vol, source: hasRealVolume ? 'VOLUME' : 'TICK/EQUAL' };
+}
+
+/* Pressão é um proxy causal quando não existe fluxo bid/ask real.
+   Se houver delta de ticks coletado pelo próprio app, ele tem prioridade.
+   Caso contrário usamos o corpo/range dos candles fechados. */
+function calcPressure(candles) {
+  const r = candles.slice(-20);
+  if (!r.length) return null;
+  const tickDelta = r.reduce((sum, c) => sum + (finite(c.delta) ? c.delta : 0), 0);
+  const tickCount = r.reduce((sum, c) => sum + (finite(c.delta) ? Math.abs(c.delta) : 0), 0);
+  if (tickCount > 3) {
+    if (tickDelta > 3) return { label: 'COMPRADORA', side: 'C', score: tickDelta, source: 'TICKS' };
+    if (tickDelta < -3) return { label: 'VENDEDORA', side: 'V', score: tickDelta, source: 'TICKS' };
+  }
+  let score = 0;
+  r.forEach(c => {
+    const range = Math.max(c.h - c.l, 1e-9);
+    const weight = finite(c.volume) && c.volume > 0 ? Math.log10(c.volume + 1) : 1;
+    score += ((c.c - c.o) / range) * weight;
+  });
+  if (score > 1.5) return { label: 'COMPRADORA', side: 'C', score, source: 'CANDLES' };
+  if (score < -1.5) return { label: 'VENDEDORA', side: 'V', score, source: 'CANDLES' };
+  return { label: 'NEUTRA', side: 'N', score, source: 'CANDLES' };
+}
+function tzParts(date, timeZone) {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false, weekday: 'short' }).formatToParts(date);
+  const out = {}; parts.forEach(x => { if (x.type !== 'literal') out[x.type] = x.value; });
+  return { minutes: Number(out.hour) * 60 + Number(out.minute), weekday: out.weekday };
+}
+function brtParts(now) {
+  return tzParts(now, BR_TZ);
+}
+function brtMinutes(now) { return brtParts(now).minutes; }
+function brtWeekday(now) {
+  const p = brtParts(now);
+  return { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 }[p.weekday];
+}
+function isStandardFxWeekend(now) {
+  /* Fechamento semanal após NY 16:00 BRT na sexta.
+     Reabertura oficial no domingo às 19:00 BRT com Sydney. */
+  const d = brtWeekday(now), m = brtMinutes(now);
+  return d === 6 || (d === 5 && m >= 16 * 60) || (d === 0 && m < 19 * 60);
+}
+
+function otcWindowStartMs(now = new Date()) {
+  const d = brtWeekday(now);
+  const m = brtMinutes(now);
+  if (d === 5 && m >= 16 * 60) return now.getTime() - (m - 16 * 60) * 60000;
+  if (d === 6) return now.getTime() - (24 * 60 - (16 * 60 - m)) * 60000;
+  if (d === 0 && m < 19 * 60) return now.getTime() - (48 * 60 - (16 * 60 - m)) * 60000;
+  return now.getTime() - 36 * 3600000;
+}
+function sessionActive(now, session) {
+  const m = brtMinutes(now);
+  const [oh,om]=session.openLocal.split(':').map(Number), [ch,cm]=session.closeLocal.split(':').map(Number);
+  const a=oh*60+om,b=ch*60+cm;
+  if (a>b) return m>=a || m<b;
+  return m>=a && m<b;
+}
+function localClock(date,tz){ return new Intl.DateTimeFormat('pt-BR',{timeZone:tz,hour:'2-digit',minute:'2-digit',hour12:false}).format(date); }
+function sessionDisplayTimes(now,s){
+  return {openLocal:s.openLocal,closeLocal:s.closeLocal,openUtc:'',closeUtc:'',offset:'BRT'};
+}
+function activeSessions(now) { return isStandardFxWeekend(now) ? [] : SESSIONS.filter(s => sessionActive(now,s)).map(s => s.name); }
+function sessionState(now, session, connectionStatus, fallbackAvailable=false) {
+  if (isStandardFxWeekend(now)) return 'FECHADA';
+  if (!sessionActive(now, session)) return 'FECHADA';
+  if (connectionStatus === 'ONLINE') return 'ONLINE';
+  if (fallbackAvailable) return 'ONLINE · FALLBACK';
+  return 'SEM FEED';
+}
+async function timeoutFetch(url, ms = 8000) {
+  const ctrl = new AbortController();
