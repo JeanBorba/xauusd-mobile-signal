@@ -1,0 +1,120 @@
+            <Text style={styles.cardTitle}>XAUUSD SPOT · FALLBACK GRATUITO ATIVO</Text>
+            <Text style={styles.price}>{spotFallback ? fmt(spotFallback.value) : '----.--'}</Text>
+            <Text style={styles.muted}>{spotFallback ? `Fonte: ${spotFallback.source} · idade ${Math.floor(spotFallback.ageSec)}s` : 'Aguardando fallback'}</Text>
+            <Text style={styles.historyText}>O feed oficial WSS tem prioridade. XAUS assume somente enquanto não houver tick oficial recente e é retirado automaticamente quando o feed oficial retorna.</Text>
+          </View>
+        ) : null}
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>INDICADORES · TF 5M</Text>
+          <IndicatorRow label="RSI (14)" value={rsi == null ? 'AGUARDANDO HISTÓRICO' : rsi.toFixed(2)} side={indSide(rsi)} />
+          <IndicatorRow label="ADX (14)" value={adx == null ? 'AGUARDANDO HISTÓRICO' : adx.adx.toFixed(1)} side={adxSide} />
+          <IndicatorRow label="EMA 20" value={ema == null ? 'AGUARDANDO HISTÓRICO' : fmt(ema)} side={emaSide} />
+          <IndicatorRow label="DXY (Calculado)" value={dxyText} side={dxySide} sub={dxy ? `${dxyState} · ${Math.floor(dxyAge)}s · ${dxy.source || 'SEM FONTE'}` : 'SEM FEED'} />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>MACRO · DADOS RECENTES</Text>
+          <IndicatorRow label="DXY (Calculado)" value={dxyText} side={dxySide} />
+          <IndicatorRow
+            label="VWAP"
+            value={vwap ? fmt(vwap.value) : 'AGUARDANDO HISTÓRICO'}
+            side={vwap && priceNow != null ? (priceNow > vwap.value ? 'C' : priceNow < vwap.value ? 'V' : 'N') : 'N'}
+            sub={vwap ? (vwap.source === 'VOLUME' ? 'VOLUME · LIVE' : 'TICK/EQUAL · ESTIMADA') : 'SEM DADOS'}
+          />
+          <IndicatorRow
+            label="Delta / Pressure"
+            value={pressure?.label || 'AGUARDANDO HISTÓRICO'}
+            side={pressure?.side || 'N'}
+            sub={pressure ? (pressure.source === 'TICKS' ? 'TICKS · LIVE' : 'CANDLES · ESTIMADA') : 'SEM DADOS'}
+          />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>ESTRUTURA · SMART MONEY</Text>
+          <IndicatorRow label="FVG" value={fvg.length ? `${fvg.length} zona(s) · ${labelSide(fvgSide)}` : 'SEM DADOS'} side={fvgSide} />
+          <IndicatorRow label="OB" value={structure.obs?.length ? `${structure.obs.length} zona(s) · ${labelSide(obSide)}` : 'SEM DADOS'} side={obSide} />
+          <IndicatorRow label="BOS / CHoCH" value={structure.event ? `${structure.event.type} ${labelSide(bosSide)}` : 'SEM DADOS'} side={bosSide} />
+        </View>
+
+        <View style={styles.signalArea}>
+          <View style={[styles.signalCard, { borderColor: colorFor(signal.side) }]}>
+            <Text style={[styles.signalTitle, { color: colorFor(signal.side) }]}>MOTOR DE SINAIS</Text>
+            <Text style={[styles.signalMain, { color: colorFor(signal.side) }]}>{signal.text === 'COMPRA' ? '⇈  COMPRA  ⇈' : signal.text === 'VENDA' ? '⇊  VENDA  ⇊' : signal.text}</Text>
+            <Text style={styles.signalMeta}>CONFIRMAÇÕES: {signal.confirmations || 0}/9 · COMPRA {signal.buyConfirmations || 0} · VENDA {signal.sellConfirmations || 0}</Text>
+            {signal.checks.map((x, i) => (
+              <Text key={i} style={[styles.check, { color: colorFor(x.side) }]}>
+                {x.side === 'C' ? '●' : x.side === 'V' ? '●' : '○'} {x.label}
+              </Text>
+            ))}
+            {closed.length < 40 ? <Text style={styles.historyText}>{closed.length} candles fechados disponíveis. Histórico carregando ({closed.length}/40).</Text> : null}
+          </View>
+
+          <View style={styles.riskCard}>
+            <Text style={styles.cardTitle}>RISCO · SESSÃO</Text>
+            <IndicatorRow label="Risco" value={risk} side={riskSide} />
+            <IndicatorRow label="Sessões online" value={isStandardFxWeekend(now) ? (otcLive ? 'OTC ONLINE · motor ativo' : 'OTC SEM FEED') : (sessions.length ? `${sessions.length} · ${sessions.join(' / ')}` : 'NENHUMA')} side="N" />
+            <IndicatorRow label="Volatilidade" value={adx ? (adx.atr / Math.max(priceNow || 1, 1) < .003 ? 'NORMAL' : 'ALTA') : '--'} side="N" />
+          </View>
+        </View>
+
+        <View style={styles.confCard}>
+          <Text style={styles.confText}>CONFIANÇA: <Text style={{ color: colorFor(signal.side) }}>{signal.score >= 70 ? 'ALTA' : signal.score >= 50 ? 'MÉDIA' : 'BAIXA'}</Text></Text>
+          <View style={styles.confTrack}><View style={[styles.confFill, { width: `${Math.max(2, Math.min(100, signal.score))}%`, backgroundColor: colorFor(signal.side) }]} /></View>
+          <Text style={styles.confPct}>{signal.score}%</Text>
+        </View>
+
+        <Pressable style={styles.button} onPress={connect}>
+          <Text style={styles.buttonText}>RECONECTAR</Text>
+        </Pressable>
+        <Text style={styles.footer}>Servidor: {HEALTH_URL}</Text>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#030712' },
+  container: { padding: 10, paddingBottom: 32 },
+  header: { alignItems: 'center', marginVertical: 16 },
+  headerRow: { flexDirection: 'row', alignItems: 'center' },
+  headerDot: { width: 11, height: 11, borderRadius: 6, marginRight: 7 },
+  title: { color: '#fbbf24', fontSize: 20, fontWeight: '900' },
+  connection: { color: '#64748b', fontSize: 11, marginTop: 6 },
+  card: { backgroundColor: '#0f172a', borderRadius: 15, padding: 13, marginBottom: 10, borderWidth: 1, borderColor: '#1e293b' },
+  cardTitle: { color: '#a8b3c7', fontSize: 14, fontWeight: '900', marginBottom: 9 },
+  sessionGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
+  session: { width: '48%', backgroundColor: '#1e293b', borderRadius: 11, padding: 11, marginBottom: 9 },
+  sessionOn: { borderLeftWidth: 3, borderLeftColor: '#3b82f6' },
+  sessionDot: { width: 9, height: 9, borderRadius: 5, marginBottom: 8 },
+  sessionName: { color: '#ffffff', fontSize: 13, fontWeight: '800' },
+  sessionSub: { color: '#64748b', fontSize: 8, marginTop: 2 },
+  sessionHours: { color: '#94a3b8', fontSize: 10, marginTop: 4 },
+  sessionState: { fontSize: 10, fontWeight: '700', marginTop: 6 },
+  priceCard: { backgroundColor: '#211b63', borderRadius: 18, padding: 20, marginBottom: 11, alignItems: 'center', borderWidth: 1, borderColor: '#4338a3' },
+  symbol: { color: '#fbbf24', fontSize: 14, fontWeight: '900' },
+  price: { color: '#ffffff', fontSize: 46, fontWeight: '900', marginVertical: 9, letterSpacing: 1 },
+  live: { color: '#22c55e', fontSize: 14, fontWeight: '900' },
+  muted: { color: '#7c8aa3', fontSize: 11, marginTop: 7 },
+  irow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 9, borderTopWidth: 1, borderTopColor: '#1e293b' },
+  ilabel: { color: '#d1d8e5', fontSize: 12, fontWeight: '800', flex: 1 },
+  ivalWrap: { flex: 1.35, alignItems: 'flex-end' },
+  ivalue: { fontSize: 12, fontWeight: '900', textAlign: 'right' },
+  isub: { fontSize: 8, marginTop: 2, textAlign: 'right' },
+  signalArea: { flexDirection: 'row', alignItems: 'stretch', marginBottom: 10 },
+  signalCard: { flex: 1.1, backgroundColor: '#07131a', borderRadius: 14, padding: 12, borderWidth: 1.5, marginRight: 5 },
+  riskCard: { flex: .9, backgroundColor: '#0f172a', borderRadius: 14, padding: 12, borderWidth: 1, borderColor: '#1e293b', marginLeft: 5 },
+  signalTitle: { fontSize: 13, fontWeight: '900' },
+  signalMain: { fontSize: 25, fontWeight: '900', marginVertical: 8 },
+  signalMeta: { color: '#cbd5e1', fontSize: 10, fontWeight: '800', marginBottom: 6 },
+  check: { fontSize: 9, fontWeight: '700', marginVertical: 3, lineHeight: 12 },
+  historyText: { color: '#94a3b8', fontSize: 9, marginTop: 8, lineHeight: 13 },
+  confCard: { backgroundColor: '#0f172a', borderRadius: 13, padding: 11, marginBottom: 10, borderWidth: 1, borderColor: '#1e293b' },
+  confText: { color: '#ffffff', fontSize: 10, fontWeight: '900' },
+  confTrack: { height: 9, backgroundColor: '#1e293b', borderRadius: 5, overflow: 'hidden', marginTop: 7 },
+  confFill: { height: '100%', borderRadius: 5 },
+  confPct: { position: 'absolute', right: 10, bottom: 9, color: '#ffffff', fontSize: 10, fontWeight: '900' },
+  button: { backgroundColor: '#1e365b', borderRadius: 12, padding: 15, alignItems: 'center', marginTop: 2 },
+  buttonText: { color: '#ffffff', fontSize: 14, fontWeight: '900' },
+  footer: { color: '#475569', fontSize: 8, textAlign: 'center', marginTop: 11 }
+});
