@@ -19,162 +19,163 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Patch server V30
+      - name: Patch and syntax-check server V30
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import textwrap
           p=Path('server/server.js')
           s=p.read_text()
-
-          s=s.replace("import http from 'http';\n", "import http from 'http';\nimport crypto from 'crypto';\n", 1) if "import crypto from 'crypto';" not in s else s
-          s=s.replace("const app = express();\n", "const app = express();\napp.use(express.json({ limit:'512kb' }));\n", 1) if "express.json({ limit:'512kb' })" not in s else s
-
+          if "import crypto from 'crypto';" not in s:
+              s=s.replace("import http from 'http';\n", "import http from 'http';\nimport crypto from 'crypto';\n", 1)
+          if "express.json({ limit:'512kb' })" not in s:
+              s=s.replace("const app = express();\n", "const app = express();\napp.use(express.json({ limit:'512kb' }));\n", 1)
           anchor="const HTTP_TIMEOUT_MS = 12_000;"
           if 'DOTO_TOKEN_SHA256' not in s:
               assert anchor in s
               s=s.replace(anchor, anchor+"\nconst DOTO_TOKEN_SHA256 = process.env.DOTO_TOKEN_SHA256 || 'aeecd106d66de22275a27e8f8bb967e780b65d76772b476c7c9f108a0b518617';\nconst DOTO_STALE_SEC = 10;\n",1)
-
           if 'let lastDotoTickAt = 0;' not in s:
               s=s.replace("let lastOfficialTickAt = 0;", "let lastOfficialTickAt = 0;\nlet lastDotoTickAt = 0;\nlet lastDotoHistoryAt = 0;\nlet lastDotoSymbol = null;",1)
-
           old="function finite(v) { return Number.isFinite(Number(v)); }\nfunction n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }"
-          new="function finite(v) { return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)); }\nfunction n(v) { if (v === null || v === undefined || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; }\nfunction validDotoToken(token) {\n  try {\n    const got=crypto.createHash('sha256').update(String(token||'')).digest('hex');\n    const a=Buffer.from(got), b=Buffer.from(DOTO_TOKEN_SHA256);\n    return a.length===b.length && crypto.timingSafeEqual(a,b);\n  } catch(_) { return false; }\n}\nfunction expectedDotoSymbol(date=new Date()) { return marketMode(date)==='OTC' ? 'XAUUSD_OTC' : 'XAUUSD'; }"
-          assert old in s
-          s=s.replace(old,new,1)
-
-          # Remove proxy history from weekend motor. Doto bridge supplies real M5.
-          old_hist="""    if (mode === 'OTC') {
-      try {
-        rows = await fetchKrakenPaxgHistory();
-        if (rows.length) source = 'KRAKEN PAXG/USD 5M · OTC PROXY';
-      } catch (e) { console.warn('[KRAKEN HISTORY]', e.message); }
-    }
-    if (!rows.length) {
-      rows = await fetchXausHistory(mode);
-      if (rows.length) source = mode === 'OTC' ? 'XAUS OTC 2M→5M · FALLBACK' : 'XAUS XAUUSD SPOT 2M→5M';
-    }"""
-          new_hist="""    if (mode !== 'OTC' && !rows.length) {
-      rows = await fetchXausHistory(mode);
-      if (rows.length) source = 'XAUS XAUUSD SPOT 2M→5M';
-    }
-    /* OTC: não injeta PAXG/XAUS no motor. O histórico real chega do
-       bridge Doto por /ingest/doto/history. */"""
-          assert old_hist in s
-          s=s.replace(old_hist,new_hist,1)
-
+          new=textwrap.dedent('''
+          function finite(v) { return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)); }
+          function n(v) { if (v === null || v === undefined || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; }
+          function validDotoToken(token) {
+            try {
+              const got=crypto.createHash('sha256').update(String(token||'')).digest('hex');
+              const a=Buffer.from(got), b=Buffer.from(DOTO_TOKEN_SHA256);
+              return a.length===b.length && crypto.timingSafeEqual(a,b);
+            } catch(_) { return false; }
+          }
+          function expectedDotoSymbol(date=new Date()) { return marketMode(date)==='OTC' ? 'XAUUSD_OTC' : 'XAUUSD'; }
+          ''').lstrip()
+          if old in s: s=s.replace(old,new,1)
+          assert 'function validDotoToken' in s
+          old_hist=textwrap.dedent('''
+              if (mode === 'OTC') {
+                try {
+                  rows = await fetchKrakenPaxgHistory();
+                  if (rows.length) source = 'KRAKEN PAXG/USD 5M · OTC PROXY';
+                } catch (e) { console.warn('[KRAKEN HISTORY]', e.message); }
+              }
+              if (!rows.length) {
+                rows = await fetchXausHistory(mode);
+                if (rows.length) source = mode === 'OTC' ? 'XAUS OTC 2M→5M · FALLBACK' : 'XAUS XAUUSD SPOT 2M→5M';
+              }
+          ''').rstrip()
+          new_hist=textwrap.dedent('''
+              if (mode !== 'OTC' && !rows.length) {
+                rows = await fetchXausHistory(mode);
+                if (rows.length) source = 'XAUS XAUUSD SPOT 2M→5M';
+              }
+              /* OTC não injeta PAXG/XAUS no motor. Histórico real vem do bridge Doto. */
+          ''').rstrip()
+          if old_hist in s: s=s.replace(old_hist,new_hist,1)
+          assert 'Histórico real vem do bridge Doto' in s
           start=s.index('async function updateMarketFeed() {')
           end=s.index('\nasync function monitorMode()',start)
-          newfun="""async function updateMarketFeed() {
-  const mode=marketMode();
-  const dotoFresh=lastDotoTickAt>0&&(now()-lastDotoTickAt)/1000<=DOTO_STALE_SEC;
-  if(dotoFresh) return;
-  if(mode==='OTC') {
-    feedName='waiting-doto-xauusd-otc';
-    broadcastMarket();
-    return;
-  }
-  const officialFresh=lastOfficialTickAt>0&&(now()-lastOfficialTickAt)/1000<=OFFICIAL_STALE_SEC;
-  if(officialFresh) return;
-  try {
-    const q=await fetchXausSpot();
-    if(!q.stale&&q.ageSec<=XAUS_STALE_SEC) emitTick(q.price,q.asOf,{name:'xaus-spot-fallback',bid:null,ask:null,marketSource:'SPOT_FALLBACK',indicative:true});
-  } catch(e) { console.warn('[XAUS]',e.message); }
-}
-"""
+          newfun=textwrap.dedent('''
+          async function updateMarketFeed() {
+            const mode=marketMode();
+            const dotoFresh=lastDotoTickAt>0&&(now()-lastDotoTickAt)/1000<=DOTO_STALE_SEC;
+            if(dotoFresh) return;
+            if(mode==='OTC') {
+              feedName='waiting-doto-xauusd-otc';
+              broadcastMarket();
+              return;
+            }
+            const officialFresh=lastOfficialTickAt>0&&(now()-lastOfficialTickAt)/1000<=OFFICIAL_STALE_SEC;
+            if(officialFresh) return;
+            try {
+              const q=await fetchXausSpot();
+              if(!q.stale&&q.ageSec<=XAUS_STALE_SEC) emitTick(q.price,q.asOf,{name:'xaus-spot-fallback',bid:null,ask:null,marketSource:'SPOT_FALLBACK',indicative:true});
+            } catch(e) { console.warn('[XAUS]',e.message); }
+          }
+          ''').lstrip()
           s=s[:start]+newfun+s[end:]
-
           route_anchor="app.get('/',(_q,r)=>r.json({"
           if "app.post('/ingest/doto/ticks'" not in s:
-              routes="""app.post('/ingest/doto/ticks',(q,r)=>{
-  r.set('Cache-Control','no-store');
-  const token=q.get('x-doto-token')||q.body?.token;
-  if(!validDotoToken(token)) return r.status(401).json({ok:false,error:'unauthorized'});
-  const body=q.body||{}, symbol=String(body.symbol||'').toUpperCase();
-  const rows=Array.isArray(body.ticks)?body.ticks:[];
-  if(!['XAUUSD','XAUUSD_OTC'].includes(symbol)||!rows.length) return r.status(400).json({ok:false,error:'invalid payload'});
-  let accepted=0,last=null;
-  for(const x of rows.slice(-500)){
-    let ts=n(x.time_msc??x.ts??x.time);
-    if(!finite(ts)) continue;
-    if(ts<1e12) ts*=1000;
-    if(Math.abs(now()-ts)>180000) continue;
-    if(symbol!==expectedDotoSymbol(new Date(ts))) continue;
-    const bid=n(x.bid),ask=n(x.ask),trade=n(x.last);
-    const price=finite(bid)&&bid>0?bid:finite(trade)&&trade>0?trade:ask;
-    if(!finite(price)||price<=0) continue;
-    const src=marketMode(new Date(ts))==='OTC'?'OTC':'OFFICIAL';
-    lastDotoTickAt=now();
-    if(src==='OFFICIAL') lastOfficialTickAt=now();
-    lastDotoSymbol=symbol;
-    emitTick(price,ts,{name:src==='OTC'?'doto-xauusd-otc':'doto-xauusd',broker:'Doto',symbol,bid:finite(bid)?bid:null,ask:finite(ask)?ask:null,marketSource:src,realTick:true});
-    accepted++; last={price,ts,bid,ask};
-  }
-  return r.json({ok:true,accepted,symbol,marketMode:marketMode(),last});
-});
+              routes=textwrap.dedent('''
+              app.post('/ingest/doto/ticks',(q,r)=>{
+                r.set('Cache-Control','no-store');
+                const token=q.get('x-doto-token')||q.body?.token;
+                if(!validDotoToken(token)) return r.status(401).json({ok:false,error:'unauthorized'});
+                const body=q.body||{}, symbol=String(body.symbol||'').toUpperCase();
+                const rows=Array.isArray(body.ticks)?body.ticks:[];
+                if(!['XAUUSD','XAUUSD_OTC'].includes(symbol)||!rows.length) return r.status(400).json({ok:false,error:'invalid payload'});
+                let accepted=0,last=null;
+                for(const x of rows.slice(-500)){
+                  let ts=n(x.time_msc??x.ts??x.time); if(!finite(ts)) continue; if(ts<1e12) ts*=1000;
+                  if(Math.abs(now()-ts)>180000 || symbol!==expectedDotoSymbol(new Date(ts))) continue;
+                  const bid=n(x.bid),ask=n(x.ask),trade=n(x.last);
+                  const price=finite(bid)&&bid>0?bid:finite(trade)&&trade>0?trade:ask;
+                  if(!finite(price)||price<=0) continue;
+                  const src=marketMode(new Date(ts))==='OTC'?'OTC':'OFFICIAL';
+                  lastDotoTickAt=now(); if(src==='OFFICIAL') lastOfficialTickAt=now(); lastDotoSymbol=symbol;
+                  emitTick(price,ts,{name:src==='OTC'?'doto-xauusd-otc':'doto-xauusd',broker:'Doto',symbol,bid:finite(bid)?bid:null,ask:finite(ask)?ask:null,marketSource:src,realTick:true});
+                  accepted++; last={price,ts,bid,ask};
+                }
+                return r.json({ok:true,accepted,symbol,marketMode:marketMode(),last});
+              });
 
-app.post('/ingest/doto/history',(q,r)=>{
-  r.set('Cache-Control','no-store');
-  const token=q.get('x-doto-token')||q.body?.token;
-  if(!validDotoToken(token)) return r.status(401).json({ok:false,error:'unauthorized'});
-  const body=q.body||{}, symbol=String(body.symbol||'').toUpperCase();
-  const mode=marketMode(), expected=mode==='OTC'?'XAUUSD_OTC':'XAUUSD';
-  if(symbol!==expected) return r.status(400).json({ok:false,error:'wrong symbol',expected});
-  const rows=[];
-  for(const raw of (Array.isArray(body.candles)?body.candles:[]).slice(-HISTORY_SIZE)){
-    let t=n(raw.t??raw.time??raw.ts); if(!finite(t)) continue; if(t<1e12)t*=1000;
-    if(marketMode(new Date(t))!==mode) continue;
-    const o=n(raw.o??raw.open),h=n(raw.h??raw.high),l=n(raw.l??raw.low),c=n(raw.c??raw.close);
-    if(![o,h,l,c].every(finite)||Math.min(o,h,l,c)<=0) continue;
-    rows.push({t:bucket(t,300),o,h,l,c,volume:n(raw.volume??raw.tick_volume)??0,delta:n(raw.delta),closed:true,marketSource:mode==='OTC'?'OTC':'OFFICIAL'});
-  }
-  const unique=[...new Map(rows.sort((a,b)=>a.t-b.t).map(x=>[x.t,x])).values()].slice(-HISTORY_SIZE);
-  if(unique.length<2) return r.status(400).json({ok:false,error:'insufficient history',count:unique.length});
-  replaceHistory(unique,mode==='OTC'?'DOTO XAUUSD_OTC M5 · REAL':'DOTO XAUUSD M5 · REAL');
-  lastDotoHistoryAt=now(); lastDotoSymbol=symbol;
-  return r.json({ok:true,count:unique.length,symbol,marketMode:mode,asOf:unique[unique.length-1].t});
-});
+              app.post('/ingest/doto/history',(q,r)=>{
+                r.set('Cache-Control','no-store');
+                const token=q.get('x-doto-token')||q.body?.token;
+                if(!validDotoToken(token)) return r.status(401).json({ok:false,error:'unauthorized'});
+                const body=q.body||{}, symbol=String(body.symbol||'').toUpperCase();
+                const mode=marketMode(), expected=mode==='OTC'?'XAUUSD_OTC':'XAUUSD';
+                if(symbol!==expected) return r.status(400).json({ok:false,error:'wrong symbol',expected});
+                const rows=[];
+                for(const raw of (Array.isArray(body.candles)?body.candles:[]).slice(-HISTORY_SIZE)){
+                  let t=n(raw.t??raw.time??raw.ts); if(!finite(t)) continue; if(t<1e12)t*=1000;
+                  if(marketMode(new Date(t))!==mode) continue;
+                  const o=n(raw.o??raw.open),h=n(raw.h??raw.high),l=n(raw.l??raw.low),c=n(raw.c??raw.close);
+                  if(![o,h,l,c].every(finite)||Math.min(o,h,l,c)<=0) continue;
+                  rows.push({t:bucket(t,300),o,h,l,c,volume:n(raw.volume??raw.tick_volume)??0,delta:n(raw.delta),closed:true,marketSource:mode==='OTC'?'OTC':'OFFICIAL'});
+                }
+                const unique=[...new Map(rows.sort((a,b)=>a.t-b.t).map(x=>[x.t,x])).values()].slice(-HISTORY_SIZE);
+                if(unique.length<2) return r.status(400).json({ok:false,error:'insufficient history',count:unique.length});
+                replaceHistory(unique,mode==='OTC'?'DOTO XAUUSD_OTC M5 · REAL':'DOTO XAUUSD M5 · REAL');
+                lastDotoHistoryAt=now(); lastDotoSymbol=symbol;
+                return r.json({ok:true,count:unique.length,symbol,marketMode:mode,asOf:unique[unique.length-1].t});
+              });
 
-"""
+              ''')
               assert route_anchor in s
               s=s.replace(route_anchor,routes+route_anchor,1)
-
-          health_old="""    dxy:dxyState,serverTime:new Date().toISOString()
-  });"""
-          health_new="""    doto:{symbol:lastDotoSymbol,tickAgeSec:lastDotoTickAt?Math.max(0,(now()-lastDotoTickAt)/1000):null,historyAgeSec:lastDotoHistoryAt?Math.max(0,(now()-lastDotoHistoryAt)/1000):null,fresh:lastDotoTickAt>0&&(now()-lastDotoTickAt)/1000<=DOTO_STALE_SEC},
-    dxy:dxyState,serverTime:new Date().toISOString()
-  });"""
-          assert health_old in s
-          s=s.replace(health_old,health_new,1)
-
-          s=s.replace('XAUUSD Mobile Signal V29 listening', 'XAUUSD Mobile Signal V30 Doto listening')
+          health_old="    dxy:dxyState,serverTime:new Date().toISOString()\n  });"
+          health_new="    doto:{symbol:lastDotoSymbol,tickAgeSec:lastDotoTickAt?Math.max(0,(now()-lastDotoTickAt)/1000):null,historyAgeSec:lastDotoHistoryAt?Math.max(0,(now()-lastDotoHistoryAt)/1000):null,fresh:lastDotoTickAt>0&&(now()-lastDotoTickAt)/1000<=DOTO_STALE_SEC},\n    dxy:dxyState,serverTime:new Date().toISOString()\n  });"
+          if health_old in s: s=s.replace(health_old,health_new,1)
+          assert 'doto:{symbol:lastDotoSymbol' in s
+          s=s.replace('XAUUSD Mobile Signal V29 listening','XAUUSD Mobile Signal V30 Doto listening')
           p.write_text(s)
+          print('PATCH_OK')
           PY
           node --check server/server.js
           grep -q "app.post('/ingest/doto/ticks'" server/server.js
-          grep -q "DOTO XAUUSD_OTC M5 · REAL" server/server.js
-          grep -q "waiting-doto-xauusd-otc" server/server.js
-          ! grep -q "if (mode === 'OTC') {.*fetchKrakenPaxgHistory" server/server.js || true
+          grep -q 'waiting-doto-xauusd-otc' server/server.js
 
-      - name: Local integration test of Doto ingestion
+      - name: Test Doto ingestion locally
         shell: bash
         run: |
           set -euo pipefail
-          TEST_TOKEN='ci-doto-test'
+          TEST_TOKEN=ci-doto-test
           TEST_HASH=$(printf '%s' "$TEST_TOKEN" | sha256sum | awk '{print $1}')
           PORT=18080 DOTO_TOKEN_SHA256="$TEST_HASH" node server/server.js >/tmp/v30.log 2>&1 &
           PID=$!
           trap 'kill $PID 2>/dev/null || true' EXIT
-          for i in {1..30}; do curl -fsS http://127.0.0.1:18080/health >/dev/null && break; sleep 1; done
-          code=$(curl -s -o /tmp/noauth -w '%{http_code}' -X POST http://127.0.0.1:18080/ingest/doto/ticks -H 'content-type: application/json' -d '{"symbol":"XAUUSD_OTC","ticks":[{"bid":4336.958,"ask":4337.158,"time_msc":'"$(date +%s%3N)"'}]}')
-          test "$code" = '401'
-          curl -fsS -X POST http://127.0.0.1:18080/ingest/doto/ticks -H "x-doto-token: $TEST_TOKEN" -H 'content-type: application/json' -d '{"symbol":"XAUUSD_OTC","ticks":[{"bid":4336.958,"ask":4337.158,"time_msc":'"$(date +%s%3N)"'}]}' | tee /tmp/ingest.json
+          for i in $(seq 1 30); do curl -fsS http://127.0.0.1:18080/health >/dev/null && break; sleep 1; done
+          TS=$(date +%s%3N)
+          CODE=$(curl -s -o /tmp/noauth -w '%{http_code}' -X POST http://127.0.0.1:18080/ingest/doto/ticks -H 'content-type: application/json' --data "{\"symbol\":\"XAUUSD_OTC\",\"ticks\":[{\"bid\":4336.958,\"ask\":4337.158,\"time_msc\":$TS}]}")
+          test "$CODE" = 401
+          curl -fsS -X POST http://127.0.0.1:18080/ingest/doto/ticks -H "x-doto-token: $TEST_TOKEN" -H 'content-type: application/json' --data "{\"symbol\":\"XAUUSD_OTC\",\"ticks\":[{\"bid\":4336.958,\"ask\":4337.158,\"time_msc\":$TS}]}" >/tmp/ingest.json
           grep -q '"accepted":1' /tmp/ingest.json
-          curl -fsS http://127.0.0.1:18080/health | tee /tmp/health.json
+          curl -fsS http://127.0.0.1:18080/health >/tmp/health.json
           grep -q 'doto-xauusd-otc' /tmp/health.json
           grep -q '4336.958' /tmp/health.json
-          echo 'Doto V30 ingestion integration test: OK'
+          echo DOTO_V30_TEST_OK
 
       - name: Commit server V30
         shell: bash
@@ -183,4 +184,9 @@ app.post('/ingest/doto/history',(q,r)=>{
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add server/server.js
-          if git diff --cached --quiet; then echo 'Server V30 already applied.'; else git commit -m 'V30 use real Doto XAUUSD and XAUUSD_OTC bridge'; git push; fi
+          if git diff --cached --quiet; then
+            echo 'Server V30 already applied.'
+          else
+            git commit -m 'V30 use real Doto XAUUSD and XAUUSD_OTC bridge'
+            git push
+          fi
