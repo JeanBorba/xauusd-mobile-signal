@@ -23,6 +23,7 @@
         setSpotFallback(null);
         return;
       }
+      if (serverFallbackFresh) return;
 
       const q = await fetchWeekendOtcGold();
       if (!alive) return;
@@ -62,7 +63,7 @@
     spotFallback.ageSec <= SPOT_FALLBACK_STALE_SEC && !spotFallback.stale;
   const marketLive = isStandardFxWeekend(now) ? otcLive : (officialFeedFresh || spotFallbackLive);
   const marketFeedLabel = isStandardFxWeekend(now)
-    ? (otcLive ? 'OTC · XAUS' : 'OTC · SEM FEED')
+    ? (otcLive ? 'OTC · ONLINE' : 'OTC · SEM FEED')
     : officialFeedFresh ? 'FEED OFICIAL' : spotFallbackLive ? 'FALLBACK GRATUITO · XAUS' : 'SEM FEED';
 
   /* Ao reabrir Sydney no domingo às 19:00 BRT, OTC deixa de alimentar o motor
@@ -171,7 +172,7 @@
             <Text style={styles.price}>{weekendOtc ? fmt(weekendOtc.value) : '----.--'}</Text>
             <Text style={styles.muted}>{weekendOtc ? `Fonte: ${weekendOtc.source} · idade ${Math.floor(weekendOtc.ageSec)}s${weekendOtc.stale ? ' · ATRASADO' : ''}` : 'Aguardando cotação OTC/indicativa'}</Text>
             <Text style={styles.historyText}>{closed.filter(c => c.marketSource === 'OTC').length} candles OTC fechados disponíveis · somente dados observados</Text>
-            <Text style={styles.historyText}>OTC/indicativo de fim de semana. O preço e os candles são provenientes da série observada da XAUS; nenhum candle é interpolado. Alimenta o motor somente enquanto o mercado oficial estiver fechado; no retorno do feed oficial, os candles OTC são descartados automaticamente.</Text>
+            <Text style={styles.historyText}>OTC/indicativo de fim de semana. O preço e os candles vêm da fonte OTC indicada acima; quando o servidor usa PAXG/USD, o painel identifica explicitamente que é um proxy 24/7. Nenhum candle é interpolado. Alimenta o motor somente enquanto o mercado oficial estiver fechado; no retorno do feed oficial, os candles OTC são descartados automaticamente.</Text>
           </View>
         ) : null}
 
