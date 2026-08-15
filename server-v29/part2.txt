@@ -1,0 +1,52 @@
+function marketState(tf='5m') {
+  const rows = closedOnly(candleStore.get(tf));
+  const closes=rows.map(x=>x.c), highs=rows.map(x=>x.h), lows=rows.map(x=>x.l);
+  const age = lastTick ? Math.max(0,(now()-lastTick.ts)/1000) : null;
+  return {
+    type:'market_state', symbol:SYMBOL, tf, serverTime:now(),
+    marketMode:marketMode(), sessions:activeSessions(),
+    price:lastTick?.price ?? null, bid:lastTick?.source?.bid ?? null, ask:lastTick?.source?.ask ?? null,
+    priceAgeSec:age, feed:feedName, upstream:upstreamState,
+    candles:rows.length, historyRequired:MIN_HISTORY, historyReady:rows.length>=MIN_HISTORY,
+    historySource, historyAsOf, historyLoadedAt, historyState,
+    RSI:rsi(closes), EMA20:ema(closes), ADX:adx(highs,lows,closes),
+    dxy:dxyState
+  };
+}
+function historyPayload(tf='5m') {
+  const rows=closedOnly(candleStore.get(tf));
+  return {
+    type:'history',symbol:SYMBOL,tf,candles:rows.map(x=>({...x,closed:true})),
+    count:rows.length,required:MIN_HISTORY,ready:rows.length>=MIN_HISTORY,
+    source:historySource,asOf:historyAsOf,loadedAt:historyLoadedAt,state:historyState,
+    marketMode:marketMode()
+  };
+}
+function broadcastHistory(){for(const c of clients)send(c,historyPayload(c.tf));}
+function broadcastMarket(){for(const c of clients)send(c,marketState(c.tf));}
+
+async function fetchDxy(symbol,label) {
+  for (const host of ['query1.finance.yahoo.com','query2.finance.yahoo.com']) {
+    try {
+      const url=`https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?range=1d&interval=1m&includePrePost=true`;
+      const j=await fetchJson(url,{'User-Agent':'Mozilla/5.0 XAUUSD-Mobile-Signal/2.0'});
+      const result=j?.chart?.result?.[0], ts=result?.timestamp||[], closes=result?.indicators?.quote?.[0]?.close||[];
+      let i=closes.length-1; while(i>=0&&!finite(closes[i]))i--;
+      const value=i>=0?n(closes[i]):n(result?.meta?.regularMarketPrice);
+      const asOf=i>=0&&finite(ts[i])?Number(ts[i])*1000:n(result?.meta?.regularMarketTime)*1000;
+      if(!finite(value)||value<=0||!finite(asOf))continue;
+      const ageSec=Math.max(0,(now()-asOf)/1000);
+      return {value,source:label,asOf,ageSec,status:ageSec>DXY_MAX_AGE_SEC?'SEM FEED':ageSec>DXY_STALE_SEC?'DADO ATRASADO':'LIVE',error:null};
+    } catch(_) {}
+  }
+  return null;
+}
+async function updateDxy() {
+  let q=null;
+  for(const [s,l] of [['DX=F','DXY Futures · Yahoo'],['DX-Y.NYB','DXY Index · Yahoo'],['^DXY','DXY · Yahoo']]){
+    q=await fetchDxy(s,l); if(q)break;
+  }
+  if(q)dxyState=q;
+  else dxyState={...dxyState,ageSec:dxyState.asOf?Math.max(0,(now()-dxyState.asOf)/1000):null,status:'SEM FEED',error:'fontes DXY indisponíveis'};
+  broadcastMarket();
+}
