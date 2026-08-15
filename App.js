@@ -1,4 +1,4 @@
-/* XAUUSD MOBILE SIGNAL — V29 | VWAP + PRESSURE + ESTRUTURA OB / BOS / CHoCH */
+/* XAUUSD MOBILE SIGNAL — V30 | VWAP + PRESSURE + ESTRUTURA OB / BOS / CHoCH */
 /* ARQUIVO App.js — conteúdo pronto para colar diretamente no Snack/Expo. */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -6,7 +6,7 @@ import { SafeAreaView, View, Text, StyleSheet, Pressable, ScrollView, StatusBar 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /*
- XAUUSD MOBILE SIGNAL — V29 DASHBOARD
+ XAUUSD MOBILE SIGNAL — V30 DASHBOARD
  Base: V16/V17
  Objetivo desta versão:
  - preservar o motor de histórico persistente;
@@ -25,7 +25,7 @@ const WS_URL = 'wss://xauusd-mobile-signal.onrender.com/stream';
 const HEALTH_URL = 'https://xauusd-mobile-signal.onrender.com/health';
 const YAHOO = 'https://query1.finance.yahoo.com';
 
-const HISTORY_KEY = '@xauusd_monitor/candles_5m_v29';
+const HISTORY_KEY = '@xauusd_monitor/candles_5m_v30';
 const MAX_CANDLES = 500;
 const CANDLE_MS = 5 * 60 * 1000;
 
@@ -74,9 +74,10 @@ const DXY_BASKET = [
 const DXY_BASE = 50.14348112;
 
 function finite(v) {
-  return Number.isFinite(Number(v));
+  return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
 }
 function num(v) {
+  if (v === null || v === undefined || v === '') return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -753,7 +754,7 @@ export default function App() {
     (async () => {
       const saved = await loadStoredCandles();
       const weekend = isStandardFxWeekend(new Date());
-      const publicHistory = weekend ? await fetchWeekendOtcIntraday() : await fetchNormalSpotIntraday();
+      const publicHistory = weekend ? [] : await fetchNormalSpotIntraday();
       const savedClean = weekend
         ? saved.filter(c => c.marketSource === 'OTC' && c.t >= otcWindowStartMs(new Date()))
         : saved.filter(c => c.marketSource !== 'OTC');
@@ -838,7 +839,7 @@ export default function App() {
           } else if (src === 'OTC') {
             lastServerOtcTickRef.current = Date.now();
             const sourceName = String(m.source?.name || 'SERVIDOR OTC');
-            setWeekendOtc({ value:Number(m.price), asOf:ts, ageSec:0, stale:false, source: sourceName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK' });
+            setWeekendOtc({ value:Number(m.price), asOf:ts, ageSec:0, stale:false, source: sourceName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC' });
           } else if (src === 'SPOT_FALLBACK') {
             lastServerFallbackTickRef.current = Date.now();
             setSpotFallback({ value:Number(m.price), asOf:ts, ageSec:0, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
@@ -873,7 +874,7 @@ export default function App() {
             } else if (src === 'OTC') {
               lastServerOtcTickRef.current = Date.now();
               const feedName = String(m.feed || 'SERVIDOR OTC');
-              setWeekendOtc({ value:Number(m.price), asOf:serverTs, ageSec:0, stale:false, source: feedName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK' });
+              setWeekendOtc({ value:Number(m.price), asOf:serverTs, ageSec:0, stale:false, source: feedName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC' });
             } else if (src === 'SPOT_FALLBACK') {
               lastServerFallbackTickRef.current = Date.now();
               setSpotFallback({ value:Number(m.price), asOf:serverTs, ageSec:0, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
@@ -934,35 +935,12 @@ export default function App() {
         lastServerFallbackTickRef.current > 0 &&
         (Date.now() - lastServerFallbackTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
 
-      if (weekend) {
-        setSpotFallback(null);
-        if (serverOtcFresh) return;
-        const q = await fetchWeekendOtcGold();
-        if (!alive) return;
-        setWeekendOtc(q);
-        if (q && q.ageSec <= OTC_STALE_SEC && !q.stale) {
-          addTick(q.value, q.asOf, null, null, 'OTC');
-        }
-
-        if (!otcHistoryBusyRef.current) {
-          otcHistoryBusyRef.current = true;
-          try {
-            const otcHistory = await fetchWeekendOtcIntraday();
-            if (alive && otcHistory.length) {
-              setCandles(prev => {
-                const clean = prev.filter(c => c.marketSource === 'OTC');
-                const merged = mergeCandles(clean, otcHistory);
-                persist(merged);
-                return merged;
-              });
-            }
-          } finally {
-            otcHistoryBusyRef.current = false;
-          }
-        }
-        return;
-      }
-
+if (weekend) {
+  /* V30: OTC do motor vem exclusivamente da Doto. */
+  setSpotFallback(null);
+  if (!serverOtcFresh && alive) setWeekendOtc(null);
+  return;
+}
       /* Mercado normal: WSS/Brokeret tem prioridade. Se ficar sem tick
          recente, XAUS assume automaticamente como fallback gratuito. */
       setWeekendOtc(null);
@@ -1002,7 +980,8 @@ export default function App() {
     return () => { alive = false; clearInterval(id); };
   }, [addTick, persist, status]);
 
-  const otcLive = !!weekendOtc && finite(weekendOtc.value) && weekendOtc.ageSec <= OTC_STALE_SEC && !weekendOtc.stale;
+  const otcAge = weekendOtc?.asOf ? Math.max(0, (Date.now() - weekendOtc.asOf) / 1000) : Infinity;
+  const otcLive = !!weekendOtc && finite(weekendOtc.value) && otcAge <= OTC_STALE_SEC && !weekendOtc.stale;
   const officialFeedFresh = status === 'ONLINE' &&
     lastOfficialTickRef.current > 0 &&
     (Date.now() - lastOfficialTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
@@ -1117,9 +1096,9 @@ export default function App() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>XAUUSD OTC · ONLINE · ALIMENTA O MOTOR</Text>
             <Text style={styles.price}>{weekendOtc ? fmt(weekendOtc.value) : '----.--'}</Text>
-            <Text style={styles.muted}>{weekendOtc ? `Fonte: ${weekendOtc.source} · idade ${Math.floor(weekendOtc.ageSec)}s${weekendOtc.stale ? ' · ATRASADO' : ''}` : 'Aguardando cotação OTC/indicativa'}</Text>
+            <Text style={styles.muted}>{weekendOtc ? `Fonte: ${weekendOtc.source} · idade ${Math.floor(otcAge)}s${weekendOtc.stale ? ' · ATRASADO' : ''}` : 'Aguardando XAUUSD_OTC real da Doto'}</Text>
             <Text style={styles.historyText}>{closed.filter(c => c.marketSource === 'OTC').length} candles OTC fechados disponíveis · somente dados observados</Text>
-            <Text style={styles.historyText}>OTC/indicativo de fim de semana. O preço e os candles vêm da fonte OTC indicada acima; quando o servidor usa PAXG/USD, o painel identifica explicitamente que é um proxy 24/7. Nenhum candle é interpolado. Alimenta o motor somente enquanto o mercado oficial estiver fechado; no retorno do feed oficial, os candles OTC são descartados automaticamente.</Text>
+            <Text style={styles.historyText}>XAUUSD_OTC da Doto em tick real. Os candles 5M são formados somente com dados Doto recebidos pelo servidor. PAXG e XAUS não alimentam o motor OTC. No domingo às 19:00 BRT o OTC é encerrado automaticamente e o sistema retorna ao XAUUSD normal.</Text>
           </View>
         ) : null}
 
