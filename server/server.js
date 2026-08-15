@@ -14,6 +14,8 @@ const BROKERET_KEY = process.env.BROKERET_API_KEY || 'demo';
 const BR_TZ = 'America/Sao_Paulo';
 const XAUS_SPOT = 'https://xaus.com/api/v1/spot';
 const XAUS_INTRADAY = 'https://xaus.com/api/v1/intraday';
+const KRAKEN_PAXG_TICKER = 'https://api.kraken.com/0/public/Ticker?pair=PAXGUSD';
+const KRAKEN_PAXG_OHLC = 'https://api.kraken.com/0/public/OHLC?pair=PAXGUSD&interval=5';
 const XAUS_REFRESH_MS = 30_000;
 const XAUS_STALE_SEC = 90;
 const OFFICIAL_STALE_SEC = 45;
@@ -175,8 +177,8 @@ function emitTick(price, ts, source) {
   if (!finite(price) || price <= 0 || !finite(ts)) return;
   const src = source?.name || 'unknown';
   const mode = marketMode(new Date(ts));
-  if (mode === 'OTC' && src !== 'xaus-otc') return;
-  if (mode === 'NORMAL' && src === 'xaus-otc') return;
+  const sourceMode = source?.marketSource === 'OTC' ? 'OTC' : 'NORMAL';
+  if (mode !== sourceMode) return;
 
   lastTick = { price:Number(price), ts:Number(ts), source };
   feedName = src;
@@ -196,6 +198,37 @@ async function fetchXausSpot() {
   const ageSec = Number.isFinite(asOf) ? Math.max(0,(now()-asOf)/1000) : Infinity;
   if (!finite(price) || price <= 0 || !Number.isFinite(asOf)) throw new Error('XAUS spot inválido');
   return { price, asOf, ageSec, stale:j?.stale === true || state === 'stale', state };
+}
+
+async function fetchKrakenPaxgTicker() {
+  const j = await fetchJson(`${KRAKEN_PAXG_TICKER}&_=${Date.now()}`, { 'User-Agent':'XAUUSD-Mobile-Signal/2.0' });
+  if (Array.isArray(j?.error) && j.error.length) throw new Error(`Kraken: ${j.error.join(', ')}`);
+  const result = j?.result || {};
+  const key = Object.keys(result)[0];
+  const row = key ? result[key] : null;
+  const price = n(row?.c?.[0]);
+  const bid = n(row?.b?.[0]);
+  const ask = n(row?.a?.[0]);
+  if (!finite(price) || price <= 0) throw new Error('Kraken PAXG/USD sem preço');
+  return { price, bid, ask, asOf: now() };
+}
+
+async function fetchKrakenPaxgHistory() {
+  const j = await fetchJson(`${KRAKEN_PAXG_OHLC}&_=${Date.now()}`, { 'User-Agent':'XAUUSD-Mobile-Signal/2.0' });
+  if (Array.isArray(j?.error) && j.error.length) throw new Error(`Kraken OHLC: ${j.error.join(', ')}`);
+  const result = j?.result || {};
+  const key = Object.keys(result).find(k => k !== 'last');
+  const rows = key && Array.isArray(result[key]) ? result[key] : [];
+  const cutoff = bucket(now(), 300);
+  const out = [];
+  for (const r of rows) {
+    const t = Number(r?.[0]) * 1000;
+    if (!Number.isFinite(t) || t >= cutoff || marketMode(new Date(t)) !== 'OTC') continue;
+    const o=n(r?.[1]), h=n(r?.[2]), l=n(r?.[3]), c=n(r?.[4]);
+    if (![o,h,l,c].every(finite)) continue;
+    out.push({ t:bucket(t,300), o,h,l,c, volume:n(r?.[6]), delta:null, closed:true, marketSource:'OTC' });
+  }
+  return out.sort((a,b)=>a.t-b.t).slice(-HISTORY_SIZE);
 }
 
 async function fetchXausHistory(mode = marketMode()) {
@@ -235,8 +268,19 @@ async function bootstrapHistory(reason='startup', force=false) {
   broadcastMarket();
   try {
     const mode = marketMode();
-    const rows = await fetchXausHistory(mode);
-    if (rows.length) replaceHistory(rows, mode === 'OTC' ? 'XAUS OTC 2M→5M' : 'XAUS XAUUSD SPOT 2M→5M');
+    let rows = [];
+    let source = '';
+    if (mode === 'OTC') {
+      try {
+        rows = await fetchKrakenPaxgHistory();
+        if (rows.length) source = 'KRAKEN PAXG/USD 5M · OTC PROXY';
+      } catch (e) { console.warn('[KRAKEN HISTORY]', e.message); }
+    }
+    if (!rows.length) {
+      rows = await fetchXausHistory(mode);
+      if (rows.length) source = mode === 'OTC' ? 'XAUS OTC 2M→5M · FALLBACK' : 'XAUS XAUUSD SPOT 2M→5M';
+    }
+    if (rows.length) replaceHistory(rows, source);
     else {
       historyState = candleStore.get('5m').length >= MIN_HISTORY ? 'ready-stale' : 'warming';
       console.warn(`[HISTORY] ${reason}: XAUS sem candles para modo ${mode}`);
@@ -285,7 +329,6 @@ function adx(highs,lows,closes,p=14) {
   for(let i=p;i<dx.length;i++)a=(a*(p-1)+dx[i])/p;
   return +a.toFixed(1);
 }
-
 function marketState(tf='5m') {
   const rows = closedOnly(candleStore.get(tf));
   const closes=rows.map(x=>x.c), highs=rows.map(x=>x.h), lows=rows.map(x=>x.l);
@@ -338,7 +381,6 @@ async function updateDxy() {
   else dxyState={...dxyState,ageSec:dxyState.asOf?Math.max(0,(now()-dxyState.asOf)/1000):null,status:'SEM FEED',error:'fontes DXY indisponíveis'};
   broadcastMarket();
 }
-
 function connectBrokeret() {
   if (upstream && [WebSocket.OPEN,WebSocket.CONNECTING].includes(upstream.readyState)) return;
   const baseName = BROKERET_KEY === 'demo' ? 'brokeret-demo' : 'brokeret';
@@ -375,17 +417,36 @@ function connectBrokeret() {
   ws.on('error',e=>console.warn('[BROKERET]',e.message));
 }
 
-async function updateXausFeed() {
+async function updateMarketFeed() {
+  const mode = marketMode();
+  if (mode === 'OTC') {
+    /* Fim de semana: PAXG/USD da Kraken é uma referência 24/7 dinâmica,
+       sem chave. É explicitamente um proxy OTC do ouro, não o XAUUSD
+       executável de uma corretora. XAUS fica como fallback de referência. */
+    try {
+      const q = await fetchKrakenPaxgTicker();
+      emitTick(q.price, q.asOf, {
+        name:'kraken-paxg-usd-otc-proxy', bid:q.bid, ask:q.ask,
+        marketSource:'OTC', indicative:true, proxy:true
+      });
+      return;
+    } catch (e) { console.warn('[KRAKEN PAXG]', e.message); }
+    try {
+      const q = await fetchXausSpot();
+      if (!q.stale && q.ageSec <= XAUS_STALE_SEC) {
+        emitTick(q.price,q.asOf,{name:'xaus-otc-fallback',bid:null,ask:null,marketSource:'OTC',indicative:true});
+      }
+    } catch(e) { console.warn('[XAUS OTC]',e.message); }
+    return;
+  }
+
+  /* Mercado normal: Brokeret/WSS é prioritário. Se não entregar tick
+     recente, XAUS assume gratuitamente até o feed oficial retornar. */
+  const officialFresh=lastOfficialTickAt>0&&(now()-lastOfficialTickAt)/1000<=OFFICIAL_STALE_SEC;
+  if (officialFresh) return;
   try {
     const q=await fetchXausSpot();
-    if(q.stale||q.ageSec>XAUS_STALE_SEC)return;
-    const mode=marketMode();
-    if(mode==='OTC'){
-      emitTick(q.price,q.asOf,{name:'xaus-otc',bid:null,ask:null,marketSource:'OTC',indicative:true});
-      return;
-    }
-    const officialFresh=lastOfficialTickAt>0&&(now()-lastOfficialTickAt)/1000<=OFFICIAL_STALE_SEC;
-    if(!officialFresh){
+    if(!q.stale&&q.ageSec<=XAUS_STALE_SEC){
       emitTick(q.price,q.asOf,{name:'xaus-spot-fallback',bid:null,ask:null,marketSource:'SPOT_FALLBACK',indicative:true});
     }
   } catch(e) { console.warn('[XAUS]',e.message); }
@@ -402,7 +463,7 @@ async function monitorMode() {
     historyLoadedAt=0;historyState='waiting';historySource='none';historyAsOf=null;
     lastTick=null;
     await bootstrapHistory('mode-switch',true);
-    await updateXausFeed();
+    await updateMarketFeed();
     broadcastMarket();
   }
 }
@@ -449,10 +510,10 @@ wss.on('connection',ws=>{
 lastMode=marketMode();
 connectBrokeret();
 bootstrapHistory('startup',true);
-updateXausFeed();
+updateMarketFeed();
 updateDxy();
 
-setInterval(updateXausFeed,XAUS_REFRESH_MS);
+setInterval(updateMarketFeed,XAUS_REFRESH_MS);
 setInterval(()=>bootstrapHistory('scheduled'),HISTORY_REFRESH_MS);
 setInterval(updateDxy,DXY_REFRESH_MS);
 setInterval(monitorMode,15_000);
