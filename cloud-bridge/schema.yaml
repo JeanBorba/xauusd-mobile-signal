@@ -1,0 +1,56 @@
+title: "XAUUSD Doto Cloud Bridge V31"
+description: "VM Always Free para manter a sessão Doto e enviar XAUUSD/XAUUSD_OTC ao XAUUSD Mobile Signal sem deixar o PC ligado."
+schemaVersion: 1.1.0
+version: "31.0.0"
+locale: "pt-br"
+
+variableGroups:
+  - title: "Oracle Cloud"
+    variables:
+      - tenancy_ocid
+      - compartment_ocid
+  - title: "Acesso seguro"
+    variables:
+      - ssh_public_key
+      - instance_name
+
+variables:
+  tenancy_ocid:
+    type: oci:identity:tenancy:id
+    required: true
+    title: "Tenancy"
+
+  compartment_ocid:
+    type: oci:identity:compartment:id
+    required: true
+    title: "Compartimento"
+
+  ssh_public_key:
+    type: string
+    required: true
+    title: "Chave pública SSH"
+    description: "Cole somente a chave pública, nunca a chave privada."
+
+  instance_name:
+    type: string
+    required: true
+    title: "Nome da VM"
+    default: "xauusd-doto-bridge-v31"
+
+outputs:
+  public_ip:
+    type: copyableString
+    title: "IP público"
+    visible: true
+  ssh_command:
+    type: copyableString
+    title: "Comando SSH"
+    visible: true
+  novnc_tunnel_command:
+    type: copyableString
+    title: "Túnel seguro para navegador"
+    visible: true
+  novnc_url:
+    type: copyableString
+    title: "URL local do navegador"
+    visible: true

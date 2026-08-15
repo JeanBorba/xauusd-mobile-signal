@@ -1,0 +1,10 @@
+#cloud-config
+package_update: false
+write_files:
+  - path: /root/doto-cloud-bootstrap.sh
+    permissions: '0700'
+    encoding: b64
+    content: ${install_script_b64}
+runcmd:
+  - [ bash, -lc, "/root/doto-cloud-bootstrap.sh > /var/log/doto-cloud-bootstrap.log 2>&1" ]
+final_message: "XAUUSD Doto Cloud Bridge V31 provisionado. Veja /var/log/doto-cloud-bootstrap.log."
