@@ -1,0 +1,226 @@
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r;
+  } finally { clearTimeout(timer); }
+}
+async function fetchJson(url, ms = DXY_REQUEST_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return await r.json();
+  } finally { clearTimeout(timer); }
+}
+
+function parseYahooChart(j) {
+  const result = j?.chart?.result?.[0];
+  const meta = result?.meta;
+  const ts = result?.timestamp || [];
+  const q = result?.indicators?.quote?.[0];
+  let i = Math.min(ts.length, q?.close?.length || 0) - 1;
+  while (i >= 0 && !finite(q.close[i])) i--;
+  if (i < 0) return null;
+  const value = Number(q.close[i]);
+  const asOf = Number(ts[i]) * 1000;
+  return finite(value) && value > 0 ? { value, asOf } : null;
+}
+
+async function yahooRate(ticker) {
+  const j = await fetchJson(`${YAHOO}/v8/finance/chart/${encodeURIComponent(ticker)}?range=1d&interval=5m&includePrePost=true&_=${Date.now()}`);
+  const q = parseYahooChart(j);
+  if (!q) throw new Error('sem preço');
+  return q;
+}
+
+async function calculateDxyBasket() {
+  const rows = [];
+  for (const [key, ticker, weight] of DXY_BASKET) {
+    try {
+      const q = await yahooRate(ticker);
+      rows.push({ key, value: q.value, asOf: q.asOf, weight });
+    } catch (_) {
+      return null;
+    }
+  }
+  let value = DXY_BASE;
+  rows.forEach(x => { value *= Math.pow(x.value, x.weight); });
+  const asOf = Math.min(...rows.map(x => x.asOf));
+  if (!finite(value) || value <= 0) return null;
+  return {
+    value,
+    asOf,
+    ageSec: Math.max(0, (Date.now() - asOf) / 1000),
+    source: 'DXY CALCULADO · CESTA ICE',
+    complete: true
+  };
+}
+
+async function fetchDirectDxy() {
+  const sources = [
+    ['DX-Y.NYB', 'DXY · Yahoo 5M'],
+    ['DX=F', 'DXY Futures · Yahoo 5M']
+  ];
+  for (const [ticker, source] of sources) {
+    try {
+      const q = await yahooRate(ticker);
+      return { ...q, ageSec: Math.max(0, (Date.now() - q.asOf) / 1000), source, complete: false };
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function fetchServerDxy() {
+  try {
+    const j = await fetchJson(HEALTH_URL, 7000);
+    const d = j?.dxy;
+    const asOf = normalizeTime(d?.asOf ?? d?.timestamp ?? d?.time);
+    if (finite(d?.value) && Number(d.value) > 0 && finite(asOf)) {
+      return {
+        value: Number(d.value),
+        asOf,
+        ageSec: Math.max(0, (Date.now() - asOf) / 1000),
+        source: d?.source || 'SERVIDOR · DXY',
+        complete: d?.complete === true
+      };
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function calculateDxy() {
+  /*
+   * Hierarquia de dados para respeitar a limitação de APIs gratuitas:
+   * 1) DXY fornecido pelo próprio servidor/health;
+   * 2) cálculo ICE local a partir das 6 moedas, somente como fallback;
+   * 3) DXY público direto, último recurso.
+   *
+   * Nunca transformamos XAUUSD em "DXY": sem as seis cotações FX isso
+   * seria um valor inventado e contaminaria o sinal.
+   */
+  const server = await fetchServerDxy();
+  if (server) return server;
+
+  const basket = await calculateDxyBasket();
+  if (basket) return basket;
+
+  return await fetchDirectDxy();
+}
+
+async function fetchWeekendOtcGold() {
+  try {
+    /* Cache-bust somente para a leitura crítica do preço. A XAUS informa
+       atualização contínua com cache de 30s e expõe data_state/price_as_of. */
+    const j = await fetchJson(`${WEEKEND_OTC_URL}?compact=1&fresh=${Date.now()}`, 6500);
+    const value = num(j?.spot_usd_oz ?? j?.xau?.price);
+    const asOf = normalizeTime(j?.data_state?.as_of ?? j?.price_as_of ?? j?.timestamp ?? j?.updated_at);
+    const updatedAt = normalizeTime(j?.updated_at);
+    if (!finite(value) || value <= 0 || !finite(asOf)) return null;
+    const ageSec = Math.max(0, (Date.now() - asOf) / 1000);
+    const state = j?.data_state?.status || (j?.stale ? 'stale' : 'fresh');
+    return {
+      value, asOf, updatedAt, ageSec,
+      source: 'XAUS · OTC/INDICATIVA',
+      state,
+      stale: j?.stale === true || state === 'stale'
+    };
+  } catch(_) { return null; }
+}
+
+async function fetchXausIntraday(mode = 'NORMAL') {
+  try {
+    const j = await fetchJson(`${XAUS_INTRADAY_URL}?symbol=xau&hours=${OTC_HISTORY_HOURS}&fresh=${Date.now()}`, 8000);
+    const points = Array.isArray(j?.points) ? j.points : [];
+    if (!points.length) return [];
+
+    const wantWeekend = mode === 'OTC';
+    const currentBucket = Math.floor(Date.now() / CANDLE_MS) * CANDLE_MS;
+    const weekendStart = otcWindowStartMs(new Date());
+    const map = new Map();
+
+    points.forEach(pt => {
+      const t = normalizeTime(pt?.t ?? pt?.time ?? pt?.timestamp);
+      const p = num(pt?.p ?? pt?.price ?? pt?.c);
+      if (!finite(t) || !finite(p) || p <= 0 || t >= currentBucket) return;
+      if (Date.now() - t > OTC_MAX_CANDLE_AGE_HOURS * 3600000) return;
+
+      const pointIsWeekend = isStandardFxWeekend(new Date(t));
+      if (pointIsWeekend !== wantWeekend) return;
+      if (wantWeekend && t < weekendStart) return;
+
+      const bucket = Math.floor(t / CANDLE_MS) * CANDLE_MS;
+      const marketSource = wantWeekend ? 'OTC' : 'SPOT_FALLBACK';
+      const old = map.get(bucket);
+      if (!old) {
+        map.set(bucket, { t: bucket, o: p, h: p, l: p, c: p, volume: 1, delta: 0, closed: true, marketSource });
+      } else {
+        const dir = p > old.c ? 1 : p < old.c ? -1 : 0;
+        old.h = Math.max(old.h, p);
+        old.l = Math.min(old.l, p);
+        old.c = p;
+        old.volume += 1;
+        old.delta += dir;
+      }
+    });
+
+    return Array.from(map.values()).sort((a,b)=>a.t-b.t).slice(-MAX_CANDLES);
+  } catch(_) { return []; }
+}
+
+async function fetchWeekendOtcIntraday() {
+  return await fetchXausIntraday('OTC');
+}
+
+async function fetchNormalSpotIntraday() {
+  return await fetchXausIntraday('NORMAL');
+}
+
+
+function colorFor(side) {
+  return side === 'C' ? '#22c55e' : side === 'V' ? '#ef4444' : '#ffffff';
+}
+function labelSide(side) {
+  return side === 'C' ? 'ALTA' : side === 'V' ? 'BAIXA' : 'NEUTRO';
+}
+function buildSignal({ price, ema, rsi, adx, fvg, structure, pressure, dxy, vwap, sessions }) {
+  const checks = [];
+  const add = (label, side, available = true) => {
+    checks.push({ label, side: available ? side : 'N', available });
+  };
+
+  /* São exatamente 9 confirmações direcionais. Dados ausentes ficam NEUTROS
+     e não são contados como confirmação. Assim o painel nunca fabrica força. */
+  add('Preço acima/abaixo da EMA20', finite(price) && finite(ema) ? (price > ema ? 'C' : price < ema ? 'V' : 'N') : 'N', finite(price) && finite(ema));
+  add('RSI favorece direção', finite(rsi) ? (rsi > 55 && rsi < 70 ? 'C' : rsi < 45 && rsi > 30 ? 'V' : 'N') : 'N', finite(rsi));
+  add('ADX +DI / -DI · força', adx && adx.adx >= 20 ? (adx.plusDI > adx.minusDI ? 'C' : adx.minusDI > adx.plusDI ? 'V' : 'N') : 'N', !!adx && adx.adx >= 20);
+
+  const near = adx && fvg?.length ? fvg.slice(-5).find(z => price >= z.inf - adx.atr * .35 && price <= z.sup + adx.atr * .35) : null;
+  add('FVG próxima', near ? (near.tipo === 'ALTA' ? 'C' : 'V') : 'N', !!near);
+  add('OB ativo', structure?.ob ? (structure.ob.tipo === 'ALTA' ? 'C' : 'V') : 'N', !!structure?.ob);
+  add('BOS / CHoCH confirmado', structure?.event ? (structure.event.side === 'ALTA' ? 'C' : 'V') : 'N', !!structure?.event);
+  add('Delta / Pressure', pressure?.side || 'N', !!pressure && pressure.side !== 'N');
+  add('Preço vs VWAP', vwap && finite(price) ? (price > vwap.value ? 'C' : price < vwap.value ? 'V' : 'N') : 'N', !!vwap && finite(price));
+
+  const dxyFresh = dxy && finite(dxy.value) && finite(dxy.asOf) && (Date.now() - dxy.asOf) / 1000 <= DXY_STALE_SEC;
+  add('DXY enfraquecendo/fortalecendo', dxyFresh && finite(dxy.changePct) ? (dxy.changePct < -0.05 ? 'C' : dxy.changePct > 0.05 ? 'V' : 'N') : 'N', dxyFresh && finite(dxy.changePct));
+
+  const buyConfirmations = checks.filter(x => x.side === 'C').length;
+  const sellConfirmations = checks.filter(x => x.side === 'V').length;
+  const leader = Math.max(buyConfirmations, sellConfirmations);
+  const leaderSide = buyConfirmations > sellConfirmations ? 'C' : sellConfirmations > buyConfirmations ? 'V' : 'N';
+  const diff = Math.abs(buyConfirmations - sellConfirmations);
+  const available = checks.filter(x => x.available).length;
+  const score = available ? Math.round((leader / 9) * 100) : 0;
+
+  /* Exige vantagem real e pelo menos 4 confirmações direcionais antes de
+     emitir COMPRA/VENDA. Caso contrário permanece NEUTRO. */
+  const finalSide = leader >= 4 && diff >= 2 ? leaderSide : 'N';
+  return {
+    side: finalSide,
+    text: finalSide === 'C' ? 'COMPRA' : finalSide === 'V' ? 'VENDA' : 'AGUARDANDO CONFIRMAÇÃO',
+    score,
+    checks,
+    buyConfirmations,
+    sellConfirmations,
