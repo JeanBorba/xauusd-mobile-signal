@@ -1,0 +1,86 @@
+name: Publish Server V30 Doto Bridge
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/publish-server-v30-doto.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reuse tested V30 patch definition
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          src=Path('.github/workflows/upgrade-server-v30-doto-v2.yml').read_text().splitlines()
+          out=[]; inside=False
+          for line in src:
+              if "python - <<'PY'" in line and not inside:
+                  inside=True; continue
+              if inside and line.strip()=='PY': break
+              if inside:
+                  out.append(line[10:] if line.startswith('          ') else line)
+          if not out: raise SystemExit('patch block not found')
+          Path('/tmp/apply_v30.py').write_text('\n'.join(out)+'\n')
+          PY
+          python /tmp/apply_v30.py
+          node --check server/server.js
+          grep -q "app.post('/ingest/doto/ticks'" server/server.js
+          grep -q 'waiting-doto-xauusd-otc' server/server.js
+          grep -q 'DOTO XAUUSD_OTC M5 · REAL' server/server.js
+
+      - name: Install server dependencies
+        shell: bash
+        run: npm --prefix server install --ignore-scripts
+
+      - name: Integration test with real Doto payload shape
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEST_TOKEN=ci-doto-test
+          TEST_HASH=$(printf '%s' "$TEST_TOKEN" | sha256sum | awk '{print $1}')
+          PORT=18080 DOTO_TOKEN_SHA256="$TEST_HASH" node server/server.js >/tmp/server.log 2>&1 &
+          PID=$!
+          trap 'kill $PID 2>/dev/null || true' EXIT
+          READY=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/health >/dev/null 2>&1; then READY=1; break; fi
+            sleep 1
+          done
+          if [ "$READY" != 1 ]; then cat /tmp/server.log; exit 1; fi
+          TS=$(date +%s%3N)
+          CODE=$(curl -s -o /tmp/unauth.json -w '%{http_code}' -X POST http://127.0.0.1:18080/ingest/doto/ticks -H 'content-type: application/json' --data "{\"symbol\":\"XAUUSD_OTC\",\"ticks\":[{\"bid\":4336.958,\"ask\":4337.158,\"time_msc\":$TS}]}")
+          test "$CODE" = 401
+          curl -fsS -X POST http://127.0.0.1:18080/ingest/doto/ticks -H "x-doto-token: $TEST_TOKEN" -H 'content-type: application/json' --data "{\"symbol\":\"XAUUSD_OTC\",\"ticks\":[{\"bid\":4336.958,\"ask\":4337.158,\"time_msc\":$TS}]}" >/tmp/tick.json
+          grep -q '"accepted":1' /tmp/tick.json
+          curl -fsS http://127.0.0.1:18080/health >/tmp/health.json
+          grep -q '4336.958' /tmp/health.json
+          grep -q 'doto-xauusd-otc' /tmp/health.json
+          echo 'V30 Doto bridge integration: PASS'
+
+      - name: Publish server V30
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/server.js
+          if git diff --cached --quiet; then
+            echo 'Server V30 already published.'
+          else
+            git commit -m 'V30 real Doto XAUUSD and XAUUSD_OTC bridge'
+            git push
+          fi
