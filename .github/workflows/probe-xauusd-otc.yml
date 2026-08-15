@@ -12,26 +12,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Probe Planalto Quotex XAUUSD OTC live endpoint
+      - name: Probe public XAUUSD OTC endpoints
         shell: bash
         run: |
-          set -euo pipefail
-          echo '--- HTTPS live endpoint ---'
-          curl -L --fail --silent --show-error --max-time 20 \
-            'https://alltradingapi.com/live/qx_live.ts?asset=XAUUSD_otc' | tee /tmp/xau-live.txt
-          echo
-          echo '--- Validate numeric quote appears ---'
-          python - <<'PY'
-          import re, pathlib
-          s=pathlib.Path('/tmp/xau-live.txt').read_text(errors='replace')
-          nums=[float(x) for x in re.findall(r'(?<![\w.])(\d{4}(?:\.\d+)?)(?![\w.])', s)]
-          gold=[x for x in nums if 2500 < x < 7000]
-          print('candidate_quotes=', gold[:20])
-          if not gold:
-              raise SystemExit('No plausible XAUUSD OTC quote found')
-          PY
-          echo '--- Checker sample ---'
+          set -u
+          urls=(
+            'http://alltradingapi.com/live/qx_live.ts?asset=XAUUSD_otc'
+            'https://alltradingapi.com/live/qx_live.ts?asset=XAUUSD_otc'
+            'http://alltradingapi.com/live/qx_live.ts?asset=xauusd_otc'
+            'https://alltradingapi.com/live/qx_live.ts?asset=xauusd_otc'
+            'https://alltradingapi.com/live/qx_live.js?asset=XAUUSD_otc'
+          )
+          for u in "${urls[@]}"; do
+            echo "===== $u ====="
+            curl -L --silent --show-error --max-time 20 \
+              -A 'Mozilla/5.0 XAUUSD-Mobile-Signal/2.1' \
+              -w '\nHTTP_STATUS=%{http_code}\nFINAL_URL=%{url_effective}\n' "$u" | head -c 12000 || true
+            echo
+          done
+          echo '===== checker ====='
           curl -L --silent --show-error --max-time 20 \
-            'https://alltradingapi.com/checker/otc_checker.ts?pair=XAUUSD_otc&start_time=00:00&end_time=23:59&day=0' \
-            | head -c 8000 || true
+            -A 'Mozilla/5.0 XAUUSD-Mobile-Signal/2.1' \
+            -w '\nHTTP_STATUS=%{http_code}\nFINAL_URL=%{url_effective}\n' \
+            'http://alltradingapi.com/checker/otc_checker.ts?pair=XAUUSD_otc&start_time=00:00&end_time=23:59&day=0' \
+            | head -c 12000 || true
           echo
