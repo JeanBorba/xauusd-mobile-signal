@@ -1,0 +1,138 @@
+function connectBrokeret() {
+  if (upstream && [WebSocket.OPEN,WebSocket.CONNECTING].includes(upstream.readyState)) return;
+  const baseName = BROKERET_KEY === 'demo' ? 'brokeret-demo' : 'brokeret';
+  upstreamState='connecting';
+  const ws=new WebSocket(`wss://feed.brokeret.com/ws?apikey=${encodeURIComponent(BROKERET_KEY)}`);
+  upstream=ws;
+  ws.on('open',()=>{
+    backoff=1000;upstreamState='connected';
+    try{ws.send(JSON.stringify({action:'subscribe',symbols:[SYMBOL]}));}catch(_){}
+    broadcastMarket();
+  });
+  ws.on('message',raw=>{
+    try{
+      const m=JSON.parse(raw);
+      if(m.type==='heartbeat'){try{ws.send(JSON.stringify({action:'pong'}));}catch(_){}return;}
+      if(isWeekendMode())return;
+      const rows = (m.type==='ticks'||m.type==='snapshot') && Array.isArray(m.data) ? m.data : [];
+      for(const x of rows){
+        if(x.s&&x.s!==SYMBOL)continue;
+        const bid=n(x.b??x.Bid),ask=n(x.a??x.Ask),last=n(x.last??x.Last);
+        const price=finite(last)&&last>0?last:finite(bid)&&bid>0?bid:ask;
+        const ts0=n(x.t??x.Time??m.ts??now()),ts=ts0<1e12?ts0*1000:ts0;
+        if(finite(price)&&price>0){
+          lastOfficialTickAt=now();
+          emitTick(price,ts,{name:baseName,bid:finite(bid)?bid:null,ask:finite(ask)?ask:null,marketSource:'OFFICIAL'});
+        }
+      }
+    }catch(e){console.warn('[BROKERET]',e.message);}
+  });
+  ws.on('close',()=>{
+    upstream=null;upstreamState='disconnected';broadcastMarket();
+    clearTimeout(reconnectTimer);reconnectTimer=setTimeout(connectBrokeret,backoff);backoff=Math.min(backoff*2,30_000);
+  });
+  ws.on('error',e=>console.warn('[BROKERET]',e.message));
+}
+
+async function updateMarketFeed() {
+  const mode = marketMode();
+  if (mode === 'OTC') {
+    /* Fim de semana: PAXG/USD da Kraken é uma referência 24/7 dinâmica,
+       sem chave. É explicitamente um proxy OTC do ouro, não o XAUUSD
+       executável de uma corretora. XAUS fica como fallback de referência. */
+    try {
+      const q = await fetchKrakenPaxgTicker();
+      emitTick(q.price, q.asOf, {
+        name:'kraken-paxg-usd-otc-proxy', bid:q.bid, ask:q.ask,
+        marketSource:'OTC', indicative:true, proxy:true
+      });
+      return;
+    } catch (e) { console.warn('[KRAKEN PAXG]', e.message); }
+    try {
+      const q = await fetchXausSpot();
+      if (!q.stale && q.ageSec <= XAUS_STALE_SEC) {
+        emitTick(q.price,q.asOf,{name:'xaus-otc-fallback',bid:null,ask:null,marketSource:'OTC',indicative:true});
+      }
+    } catch(e) { console.warn('[XAUS OTC]',e.message); }
+    return;
+  }
+
+  /* Mercado normal: Brokeret/WSS é prioritário. Se não entregar tick
+     recente, XAUS assume gratuitamente até o feed oficial retornar. */
+  const officialFresh=lastOfficialTickAt>0&&(now()-lastOfficialTickAt)/1000<=OFFICIAL_STALE_SEC;
+  if (officialFresh) return;
+  try {
+    const q=await fetchXausSpot();
+    if(!q.stale&&q.ageSec<=XAUS_STALE_SEC){
+      emitTick(q.price,q.asOf,{name:'xaus-spot-fallback',bid:null,ask:null,marketSource:'SPOT_FALLBACK',indicative:true});
+    }
+  } catch(e) { console.warn('[XAUS]',e.message); }
+}
+
+async function monitorMode() {
+  const mode=marketMode();
+  if(lastMode===null){lastMode=mode;return;}
+  if(mode!==lastMode){
+    console.log(`[MODE] ${lastMode} -> ${mode}`);
+    lastMode=mode;
+    const arr=candleStore.get('5m');arr.length=0;
+    for(const tf of ['15m','30m','1h'])candleStore.get(tf).length=0;
+    historyLoadedAt=0;historyState='waiting';historySource='none';historyAsOf=null;
+    lastTick=null;
+    await bootstrapHistory('mode-switch',true);
+    await updateMarketFeed();
+    broadcastMarket();
+  }
+}
+
+app.get('/',(_q,r)=>r.json({
+  ok:true,service:'xauusd-mobile-signal',symbol:SYMBOL,websocket:'/stream',
+  marketMode:marketMode(),sessions:activeSessions(),feed:feedName
+}));
+app.get('/health',(_q,r)=>{
+  r.set('Cache-Control','no-store');
+  const m=marketState('5m');
+  r.json({
+    ok:true,symbol:SYMBOL,marketMode:m.marketMode,sessions:m.sessions,
+    primary:feedName,upstream:upstreamState,clients:clients.size,
+    lastTick:lastTick?new Date(lastTick.ts).toISOString():null,lastPrice:lastTick?.price??null,
+    latencyAgeSec:m.priceAgeSec,
+    history:{count:m.candles,required:m.historyRequired,ready:m.historyReady,source:historySource,asOf:historyAsOf,loadedAt:historyLoadedAt,state:historyState},
+    dxy:dxyState,serverTime:new Date().toISOString()
+  });
+});
+app.get('/history',(q,r)=>{
+  r.set('Cache-Control','no-store');
+  const tf=VALID_TF.has(String(q.query.tf||'5m'))?String(q.query.tf||'5m'):'5m';
+  r.json(historyPayload(tf));
+});
+app.get('/dxy',(_q,r)=>{r.set('Cache-Control','no-store');r.json({ok:dxyState.value!=null,dxy:dxyState});});
+
+wss.on('connection',ws=>{
+  const client={ws,tf:'5m'};clients.add(client);
+  send(client,{type:'server',status:upstreamState,source:feedName,marketMode:marketMode(),sessions:activeSessions(),ts:now()});
+  if(lastTick)send(client,{type:'tick',symbol:SYMBOL,price:lastTick.price,ts:lastTick.ts,source:lastTick.source,serverTs:now(),marketMode:marketMode()});
+  send(client,historyPayload(client.tf));send(client,marketState(client.tf));
+  ws.on('message',raw=>{
+    try{
+      const m=JSON.parse(raw);
+      if((m.type==='config'||m.type==='set_tf')&&VALID_TF.has(m.tf)){client.tf=m.tf;send(client,historyPayload(client.tf));send(client,marketState(client.tf));}
+      else if(m.type==='ping')send(client,{type:'pong',ts:now()});
+      else if(m.type==='refresh_history')bootstrapHistory('client',true).then(()=>{send(client,historyPayload(client.tf));send(client,marketState(client.tf));});
+    }catch(_){send(client,{type:'error',message:'Invalid client message',ts:now()});}
+  });
+  ws.on('close',()=>clients.delete(client));ws.on('error',()=>clients.delete(client));
+});
+
+lastMode=marketMode();
+connectBrokeret();
+bootstrapHistory('startup',true);
+updateMarketFeed();
+updateDxy();
+
+setInterval(updateMarketFeed,XAUS_REFRESH_MS);
+setInterval(()=>bootstrapHistory('scheduled'),HISTORY_REFRESH_MS);
+setInterval(updateDxy,DXY_REFRESH_MS);
+setInterval(monitorMode,15_000);
+
+server.listen(PORT,'0.0.0.0',()=>console.log(`XAUUSD Mobile Signal V29 listening on ${PORT} | mode=${marketMode()}`));
