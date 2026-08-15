@@ -1,0 +1,54 @@
+name: Fix V30 Current OTC Window
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/fix-v30-current-otc-window.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Restrict OTC history to current weekly window
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('server/server.js'); s=p.read_text()
+          if 'function otcWindowStartMs(' not in s:
+              anchor="function marketMode(date = new Date()) { return isWeekendMode(date) ? 'OTC' : 'NORMAL'; }"
+              helper="""function marketMode(date = new Date()) { return isWeekendMode(date) ? 'OTC' : 'NORMAL'; }
+function otcWindowStartMs(date = new Date()) {
+  const { day, minutes } = brtParts(date);
+  if (day === 5 && minutes >= 16 * 60) return date.getTime() - (minutes - 16 * 60) * 60000;
+  if (day === 6) return date.getTime() - (24 * 60 - (16 * 60 - minutes)) * 60000;
+  if (day === 0 && minutes < 19 * 60) return date.getTime() - (48 * 60 - (16 * 60 - minutes)) * 60000;
+  return date.getTime() - 36 * 3600000;
+}"""
+              assert anchor in s
+              s=s.replace(anchor,helper,1)
+          needle="let t=n(raw.t??raw.time??raw.ts); if(!finite(t)) continue; if(t<1e12)t*=1000; if(marketMode(new Date(t))!==mode) continue;"
+          repl="let t=n(raw.t??raw.time??raw.ts); if(!finite(t)) continue; if(t<1e12)t*=1000; if(marketMode(new Date(t))!==mode) continue; if(mode==='OTC' && t < otcWindowStartMs()) continue;"
+          assert needle in s or repl in s
+          s=s.replace(needle,repl,1)
+          p.write_text(s)
+          PY
+          node --check server/server.js
+          grep -q "mode==='OTC' && t < otcWindowStartMs()" server/server.js
+      - name: Publish fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/server.js
+          git diff --cached --quiet || (git commit -m 'V30 restrict Doto OTC history to current weekend' && git push)
