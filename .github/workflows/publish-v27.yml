@@ -23,7 +23,6 @@ jobs:
 
       - name: Validate JavaScript/JSX
         run: |
-          node -e "const fs=require('fs'); const cp=require('child_process'); cp.execFileSync('npx',['--yes','@babel/parser','--help'],{stdio:'ignore'});"
           npm init -y >/dev/null 2>&1
           npm install --no-audit --no-fund @babel/parser >/dev/null 2>&1
           node - <<'NODE'
