@@ -1,0 +1,129 @@
+async function fetchKrakenPaxgTicker() {
+  const j = await fetchJson(`${KRAKEN_PAXG_TICKER}&_=${Date.now()}`, { 'User-Agent':'XAUUSD-Mobile-Signal/2.0' });
+  if (Array.isArray(j?.error) && j.error.length) throw new Error(`Kraken: ${j.error.join(', ')}`);
+  const result = j?.result || {};
+  const key = Object.keys(result)[0];
+  const row = key ? result[key] : null;
+  const price = n(row?.c?.[0]);
+  const bid = n(row?.b?.[0]);
+  const ask = n(row?.a?.[0]);
+  if (!finite(price) || price <= 0) throw new Error('Kraken PAXG/USD sem preço');
+  return { price, bid, ask, asOf: now() };
+}
+
+async function fetchKrakenPaxgHistory() {
+  const j = await fetchJson(`${KRAKEN_PAXG_OHLC}&_=${Date.now()}`, { 'User-Agent':'XAUUSD-Mobile-Signal/2.0' });
+  if (Array.isArray(j?.error) && j.error.length) throw new Error(`Kraken OHLC: ${j.error.join(', ')}`);
+  const result = j?.result || {};
+  const key = Object.keys(result).find(k => k !== 'last');
+  const rows = key && Array.isArray(result[key]) ? result[key] : [];
+  const cutoff = bucket(now(), 300);
+  const out = [];
+  for (const r of rows) {
+    const t = Number(r?.[0]) * 1000;
+    if (!Number.isFinite(t) || t >= cutoff || marketMode(new Date(t)) !== 'OTC') continue;
+    const o=n(r?.[1]), h=n(r?.[2]), l=n(r?.[3]), c=n(r?.[4]);
+    if (![o,h,l,c].every(finite)) continue;
+    out.push({ t:bucket(t,300), o,h,l,c, volume:n(r?.[6]), delta:null, closed:true, marketSource:'OTC' });
+  }
+  return out.sort((a,b)=>a.t-b.t).slice(-HISTORY_SIZE);
+}
+
+async function fetchXausHistory(mode = marketMode()) {
+  const j = await fetchJson(`${XAUS_INTRADAY}?symbol=xau&hours=48&fresh=${Date.now()}`, { 'User-Agent':'XAUUSD-Mobile-Signal/2.0' });
+  const points = Array.isArray(j?.points) ? j.points : [];
+  const map = new Map();
+  const cutoff = bucket(now(), 300);
+  for (const p of points) {
+    const t = normalizeXausTime(p?.t ?? p?.time ?? p?.timestamp);
+    const price = n(p?.p ?? p?.price ?? p?.c);
+    if (!Number.isFinite(t) || !finite(price) || price <= 0 || t >= cutoff) continue;
+    const pMode = marketMode(new Date(t));
+    if (pMode !== mode) continue;
+    const bt = bucket(t, 300);
+    let c = map.get(bt);
+    const source = mode === 'OTC' ? 'OTC' : 'SPOT_FALLBACK';
+    if (!c) {
+      c = { t:bt, o:price, h:price, l:price, c:price, volume:1, delta:0, closed:true, marketSource:source };
+      map.set(bt,c);
+    } else {
+      const dir = price > c.c ? 1 : price < c.c ? -1 : 0;
+      c.h = Math.max(c.h,price);
+      c.l = Math.min(c.l,price);
+      c.c = price;
+      c.volume += 1;
+      c.delta += dir;
+    }
+  }
+  return [...map.values()].sort((a,b)=>a.t-b.t).slice(-HISTORY_SIZE);
+}
+
+async function bootstrapHistory(reason='startup', force=false) {
+  if (historyBusy) return;
+  if (!force && historyLoadedAt && now()-historyLoadedAt < 120_000 && candleStore.get('5m').length >= MIN_HISTORY) return;
+  historyBusy = true;
+  historyState = 'loading';
+  broadcastMarket();
+  try {
+    const mode = marketMode();
+    let rows = [];
+    let source = '';
+    if (mode === 'OTC') {
+      try {
+        rows = await fetchKrakenPaxgHistory();
+        if (rows.length) source = 'KRAKEN PAXG/USD 5M · OTC PROXY';
+      } catch (e) { console.warn('[KRAKEN HISTORY]', e.message); }
+    }
+    if (!rows.length) {
+      rows = await fetchXausHistory(mode);
+      if (rows.length) source = mode === 'OTC' ? 'XAUS OTC 2M→5M · FALLBACK' : 'XAUS XAUUSD SPOT 2M→5M';
+    }
+    if (rows.length) replaceHistory(rows, source);
+    else {
+      historyState = candleStore.get('5m').length >= MIN_HISTORY ? 'ready-stale' : 'warming';
+      console.warn(`[HISTORY] ${reason}: XAUS sem candles para modo ${mode}`);
+    }
+  } catch(e) {
+    historyState = candleStore.get('5m').length >= MIN_HISTORY ? 'ready-stale' : 'failed';
+    console.warn('[HISTORY]', e.message);
+  } finally {
+    historyBusy = false;
+    broadcastHistory();
+    broadcastMarket();
+  }
+}
+
+function rsi(closes,p=14) {
+  if (closes.length < p+1) return null;
+  let g=0,l=0;
+  for(let i=1;i<=p;i++){const d=closes[i]-closes[i-1];if(d>=0)g+=d;else l-=d;}
+  let ag=g/p,al=l/p;
+  for(let i=p+1;i<closes.length;i++){const d=closes[i]-closes[i-1];ag=(ag*(p-1)+Math.max(d,0))/p;al=(al*(p-1)+Math.max(-d,0))/p;}
+  if(al===0)return 100;if(ag===0)return 0;
+  return +(100-100/(1+ag/al)).toFixed(2);
+}
+function ema(closes,p=20) {
+  if(closes.length<p)return null;
+  let e=closes.slice(0,p).reduce((a,b)=>a+b,0)/p,k=2/(p+1);
+  for(let i=p;i<closes.length;i++)e=closes[i]*k+e*(1-k);
+  return +e.toFixed(2);
+}
+function adx(highs,lows,closes,p=14) {
+  if(highs.length<p*2+1)return null;
+  const tr=[],pd=[],md=[];
+  for(let i=1;i<highs.length;i++){
+    const up=highs[i]-highs[i-1],down=lows[i-1]-lows[i];
+    tr.push(Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1])));
+    pd.push(up>down&&up>0?up:0);md.push(down>up&&down>0?down:0);
+  }
+  let atr=0,plus=0,minus=0;
+  for(let i=0;i<p;i++){atr+=tr[i];plus+=pd[i];minus+=md[i];}
+  atr/=p;plus/=p;minus/=p;
+  const dx=[]; const push=()=>{const pi=atr?100*plus/atr:0,mi=atr?100*minus/atr:0;dx.push(pi+mi?100*Math.abs(pi-mi)/(pi+mi):0);};
+  push();
+  for(let i=p;i<tr.length;i++){atr=(atr*(p-1)+tr[i])/p;plus=(plus*(p-1)+pd[i])/p;minus=(minus*(p-1)+md[i])/p;push();}
+  if(dx.length<p)return null;
+  let a=dx.slice(0,p).reduce((x,y)=>x+y,0)/p;
+  for(let i=p;i<dx.length;i++)a=(a*(p-1)+dx[i])/p;
+  return +a.toFixed(1);
+}
