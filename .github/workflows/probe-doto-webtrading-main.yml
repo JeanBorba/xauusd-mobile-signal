@@ -1,0 +1,32 @@
+name: Probe Doto WebTrading Main
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-doto-webtrading-main.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Inspect active trading bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --silent --show-error --max-time 30 'https://client.doto.com/assets/web-trading.doto-ByKfyKGR.js' -o /tmp/main.js
+          echo BYTES=$(wc -c </tmp/main.js)
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s=Path('/tmp/main.js').read_text(errors='replace')
+          for needle in ['server-tWFzCgKR.js','accounts/servers','connectionUrl','updateConnectionUrl','subscribeTick','V01_T_TickSubscribe','XAUUSD_OTC','symbols/live','charts/candles','websocket','WebSocket','serverId','serverUrl','ws']:
+              print('\n===== ',needle,' =====')
+              hits=[m.start() for m in re.finditer(re.escape(needle),s,re.I)]
+              print('hits',len(hits))
+              for i in hits[:30]: print(s[max(0,i-1200):min(len(s),i+2200)],'\n---')
+          print('\nIMPORTS')
+          for m in re.finditer(r'import\{[^;]{0,5000}?server-tWFzCgKR\.js',s): print(s[m.start():m.end()+1000])
+          PY
