@@ -1,3 +1,4 @@
+# Final validation after current-weekend Doto history filter
 name: Validate XAUUSD Server V30 Doto
 
 on:
@@ -27,6 +28,7 @@ jobs:
           grep -q 'doto-xauusd-otc' server/server.js
           grep -q 'DOTO XAUUSD_OTC M5 · REAL' server/server.js
           grep -q 'waiting-doto-xauusd-otc' server/server.js
+          grep -q "mode==='OTC' && t < otcWindowStartMs()" server/server.js
           echo 'Server V30 static validation: OK'
 
       - name: Verify Render V30 and protected ingestion
