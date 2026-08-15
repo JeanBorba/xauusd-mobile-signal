@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import http from 'http';
+import crypto from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 
 const PORT = Number(process.env.PORT || 10000);
@@ -24,8 +25,11 @@ const DXY_REFRESH_MS = 60_000;
 const DXY_STALE_SEC = 120;
 const DXY_MAX_AGE_SEC = 600;
 const HTTP_TIMEOUT_MS = 12_000;
+const DOTO_TOKEN_SHA256 = process.env.DOTO_TOKEN_SHA256 || 'aeecd106d66de22275a27e8f8bb967e780b65d76772b476c7c9f108a0b518617';
+const DOTO_STALE_SEC = 10;
 
 const app = express();
+app.use(express.json({ limit:'512kb' }));
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/stream' });
 
@@ -37,6 +41,9 @@ let upstreamState = 'disconnected';
 let reconnectTimer = null;
 let backoff = 1000;
 let lastOfficialTickAt = 0;
+let lastDotoTickAt = 0;
+let lastDotoHistoryAt = 0;
+let lastDotoSymbol = null;
 let lastTick = null;
 let feedName = 'starting';
 let historySource = 'none';
@@ -47,8 +54,17 @@ let historyBusy = false;
 let lastMode = null;
 let dxyState = { value: null, source: null, asOf: null, ageSec: null, status: 'SEM FEED', error: null };
 
-function finite(v) { return Number.isFinite(Number(v)); }
-function n(v) { const x = Number(v); return Number.isFinite(x) ? x : null; }
+function finite(v) { return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v)); }
+function n(v) { if (v === null || v === undefined || v === '') return null; const x = Number(v); return Number.isFinite(x) ? x : null; }
+function validDotoToken(token) {
+  try {
+    const got=crypto.createHash('sha256').update(String(token||'')).digest('hex');
+    const a=Buffer.from(got),b=Buffer.from(DOTO_TOKEN_SHA256);
+    return a.length===b.length&&crypto.timingSafeEqual(a,b);
+  } catch(_) { return false; }
+}
+function expectedDotoSymbol(date=new Date()) { return marketMode(date)==='OTC'?'XAUUSD_OTC':'XAUUSD'; }
+
 function now() { return Date.now(); }
 function bucket(ts, sec) { return Math.floor(Number(ts) / 1000 / sec) * sec * 1000; }
 function closedOnly(arr) { return (arr || []).filter(c => c.closed !== false); }
@@ -270,16 +286,11 @@ async function bootstrapHistory(reason='startup', force=false) {
     const mode = marketMode();
     let rows = [];
     let source = '';
-    if (mode === 'OTC') {
-      try {
-        rows = await fetchKrakenPaxgHistory();
-        if (rows.length) source = 'KRAKEN PAXG/USD 5M · OTC PROXY';
-      } catch (e) { console.warn('[KRAKEN HISTORY]', e.message); }
-    }
-    if (!rows.length) {
+    if (mode !== 'OTC' && !rows.length) {
       rows = await fetchXausHistory(mode);
-      if (rows.length) source = mode === 'OTC' ? 'XAUS OTC 2M→5M · FALLBACK' : 'XAUS XAUUSD SPOT 2M→5M';
+      if (rows.length) source = 'XAUS XAUUSD SPOT 2M→5M';
     }
+    /* OTC usa somente histórico Doto recebido pelo bridge. */
     if (rows.length) replaceHistory(rows, source);
     else {
       historyState = candleStore.get('5m').length >= MIN_HISTORY ? 'ready-stale' : 'warming';
@@ -418,37 +429,15 @@ function connectBrokeret() {
 }
 
 async function updateMarketFeed() {
-  const mode = marketMode();
-  if (mode === 'OTC') {
-    /* Fim de semana: PAXG/USD da Kraken é uma referência 24/7 dinâmica,
-       sem chave. É explicitamente um proxy OTC do ouro, não o XAUUSD
-       executável de uma corretora. XAUS fica como fallback de referência. */
-    try {
-      const q = await fetchKrakenPaxgTicker();
-      emitTick(q.price, q.asOf, {
-        name:'kraken-paxg-usd-otc-proxy', bid:q.bid, ask:q.ask,
-        marketSource:'OTC', indicative:true, proxy:true
-      });
-      return;
-    } catch (e) { console.warn('[KRAKEN PAXG]', e.message); }
-    try {
-      const q = await fetchXausSpot();
-      if (!q.stale && q.ageSec <= XAUS_STALE_SEC) {
-        emitTick(q.price,q.asOf,{name:'xaus-otc-fallback',bid:null,ask:null,marketSource:'OTC',indicative:true});
-      }
-    } catch(e) { console.warn('[XAUS OTC]',e.message); }
-    return;
-  }
-
-  /* Mercado normal: Brokeret/WSS é prioritário. Se não entregar tick
-     recente, XAUS assume gratuitamente até o feed oficial retornar. */
+  const mode=marketMode();
+  const dotoFresh=lastDotoTickAt>0&&(now()-lastDotoTickAt)/1000<=DOTO_STALE_SEC;
+  if(dotoFresh) return;
+  if(mode==='OTC') { feedName='waiting-doto-xauusd-otc'; broadcastMarket(); return; }
   const officialFresh=lastOfficialTickAt>0&&(now()-lastOfficialTickAt)/1000<=OFFICIAL_STALE_SEC;
-  if (officialFresh) return;
+  if(officialFresh) return;
   try {
     const q=await fetchXausSpot();
-    if(!q.stale&&q.ageSec<=XAUS_STALE_SEC){
-      emitTick(q.price,q.asOf,{name:'xaus-spot-fallback',bid:null,ask:null,marketSource:'SPOT_FALLBACK',indicative:true});
-    }
+    if(!q.stale&&q.ageSec<=XAUS_STALE_SEC) emitTick(q.price,q.asOf,{name:'xaus-spot-fallback',bid:null,ask:null,marketSource:'SPOT_FALLBACK',indicative:true});
   } catch(e) { console.warn('[XAUS]',e.message); }
 }
 
@@ -468,6 +457,47 @@ async function monitorMode() {
   }
 }
 
+
+app.post('/ingest/doto/ticks',(q,r)=>{
+  r.set('Cache-Control','no-store');
+  const token=q.get('x-doto-token')||q.body?.token;
+  if(!validDotoToken(token)) return r.status(401).json({ok:false,error:'unauthorized'});
+  const body=q.body||{},symbol=String(body.symbol||'').toUpperCase(),rows=Array.isArray(body.ticks)?body.ticks:[];
+  if(!['XAUUSD','XAUUSD_OTC'].includes(symbol)||!rows.length) return r.status(400).json({ok:false,error:'invalid payload'});
+  let accepted=0,last=null;
+  for(const x of rows.slice(-500)) {
+    let ts=n(x.time_msc??x.ts??x.time); if(!finite(ts)) continue; if(ts<1e12) ts*=1000;
+    if(Math.abs(now()-ts)>180000||symbol!==expectedDotoSymbol(new Date(ts))) continue;
+    const bid=n(x.bid),ask=n(x.ask),trade=n(x.last),price=finite(bid)&&bid>0?bid:finite(trade)&&trade>0?trade:ask;
+    if(!finite(price)||price<=0) continue;
+    const src=marketMode(new Date(ts))==='OTC'?'OTC':'OFFICIAL';
+    lastDotoTickAt=now(); if(src==='OFFICIAL') lastOfficialTickAt=now(); lastDotoSymbol=symbol;
+    emitTick(price,ts,{name:src==='OTC'?'doto-xauusd-otc':'doto-xauusd',broker:'Doto',symbol,bid:finite(bid)?bid:null,ask:finite(ask)?ask:null,marketSource:src,realTick:true});
+    accepted++; last={price,ts,bid,ask};
+  }
+  r.json({ok:true,accepted,symbol,marketMode:marketMode(),last});
+});
+
+app.post('/ingest/doto/history',(q,r)=>{
+  r.set('Cache-Control','no-store');
+  const token=q.get('x-doto-token')||q.body?.token;
+  if(!validDotoToken(token)) return r.status(401).json({ok:false,error:'unauthorized'});
+  const body=q.body||{},symbol=String(body.symbol||'').toUpperCase(),mode=marketMode(),expected=mode==='OTC'?'XAUUSD_OTC':'XAUUSD';
+  if(symbol!==expected) return r.status(400).json({ok:false,error:'wrong symbol',expected});
+  const rows=[];
+  for(const raw of (Array.isArray(body.candles)?body.candles:[]).slice(-HISTORY_SIZE)) {
+    let t=n(raw.t??raw.time??raw.ts); if(!finite(t)) continue; if(t<1e12)t*=1000; if(marketMode(new Date(t))!==mode) continue;
+    const o=n(raw.o??raw.open),h=n(raw.h??raw.high),l=n(raw.l??raw.low),c=n(raw.c??raw.close);
+    if(![o,h,l,c].every(finite)||Math.min(o,h,l,c)<=0) continue;
+    rows.push({t:bucket(t,300),o,h,l,c,volume:n(raw.volume??raw.tick_volume)??0,delta:n(raw.delta),closed:true,marketSource:mode==='OTC'?'OTC':'OFFICIAL'});
+  }
+  const unique=[...new Map(rows.sort((x,y)=>x.t-y.t).map(x=>[x.t,x])).values()].slice(-HISTORY_SIZE);
+  if(unique.length<2) return r.status(400).json({ok:false,error:'insufficient history',count:unique.length});
+  replaceHistory(unique,mode==='OTC'?'DOTO XAUUSD_OTC M5 · REAL':'DOTO XAUUSD M5 · REAL');
+  lastDotoHistoryAt=now(); lastDotoSymbol=symbol;
+  r.json({ok:true,count:unique.length,symbol,marketMode:mode,asOf:unique[unique.length-1].t});
+});
+
 app.get('/',(_q,r)=>r.json({
   ok:true,service:'xauusd-mobile-signal',symbol:SYMBOL,websocket:'/stream',
   marketMode:marketMode(),sessions:activeSessions(),feed:feedName
@@ -481,6 +511,7 @@ app.get('/health',(_q,r)=>{
     lastTick:lastTick?new Date(lastTick.ts).toISOString():null,lastPrice:lastTick?.price??null,
     latencyAgeSec:m.priceAgeSec,
     history:{count:m.candles,required:m.historyRequired,ready:m.historyReady,source:historySource,asOf:historyAsOf,loadedAt:historyLoadedAt,state:historyState},
+    doto:{symbol:lastDotoSymbol,tickAgeSec:lastDotoTickAt?Math.max(0,(now()-lastDotoTickAt)/1000):null,historyAgeSec:lastDotoHistoryAt?Math.max(0,(now()-lastDotoHistoryAt)/1000):null,fresh:lastDotoTickAt>0&&(now()-lastDotoTickAt)/1000<=DOTO_STALE_SEC},
     dxy:dxyState,serverTime:new Date().toISOString()
   });
 });
@@ -518,4 +549,4 @@ setInterval(()=>bootstrapHistory('scheduled'),HISTORY_REFRESH_MS);
 setInterval(updateDxy,DXY_REFRESH_MS);
 setInterval(monitorMode,15_000);
 
-server.listen(PORT,'0.0.0.0',()=>console.log(`XAUUSD Mobile Signal V29 listening on ${PORT} | mode=${marketMode()}`));
+server.listen(PORT,'0.0.0.0',()=>console.log(`XAUUSD Mobile Signal V30 Doto listening on ${PORT} | mode=${marketMode()}`));
