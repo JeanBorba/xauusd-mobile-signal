@@ -1,0 +1,34 @@
+name: Probe Doto Websocket Service
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-doto-ws-service.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Download and inspect Doto websocket modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          UA='Mozilla/5.0'
+          for u in \
+            'https://client.doto.com/assets/websocket.service-CDoHi2ii.js' \
+            'https://client.doto.com/assets/server-tWFzCgKR.js' \
+            'https://client.doto.com/assets/web-trading.doto-DPVM4wYK.js'; do
+            echo "===== $u ====="
+            f=/tmp/$(basename "$u")
+            curl -L --fail --silent --show-error --max-time 30 -A "$UA" "$u" -o "$f"
+            echo BYTES=$(wc -c <"$f")
+            if [ $(wc -c <"$f") -lt 50000 ]; then cat "$f"; echo; fi
+            echo '--- URLS ---'
+            grep -Eo 'wss?://[^"'"'"' )]+' "$f" | sort -u | head -100 || true
+            grep -Eo 'https?://[^"'"'"' )]+' "$f" | grep -Ei 'doto|api|socket|stream|quote|market|price' | sort -u | head -100 || true
+            echo '--- CONTEXT ---'
+            grep -Eio '.{0,180}(WebSocket|socket|subscribe|unsubscribe|quote|tick|price|market-data|marketdata|instrument|symbol).{0,240}' "$f" | head -200 || true
+          done
