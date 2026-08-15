@@ -1,0 +1,51 @@
+name: Probe Doto Web Feed
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-doto-web-feed.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect public Doto web trading shell and bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          UA='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36'
+          URL='https://client.doto.com/web-trading/doto?symbol=XAUUSD_OTC'
+          curl -L --silent --show-error --max-time 30 -A "$UA" "$URL" -o /tmp/doto.html
+          echo 'HTML_BYTES='$(wc -c </tmp/doto.html)
+          echo '--- HTML HEAD ---'
+          head -c 4000 /tmp/doto.html || true
+          echo
+          python - <<'PY'
+          import re, pathlib, urllib.parse
+          html=pathlib.Path('/tmp/doto.html').read_text(errors='replace')
+          srcs=re.findall(r'<script[^>]+src=["\']([^"\']+)',html,re.I)
+          links=re.findall(r'<link[^>]+href=["\']([^"\']+)',html,re.I)
+          base='https://client.doto.com/'
+          urls=[]
+          for x in srcs+links:
+              u=urllib.parse.urljoin(base,x)
+              if u.endswith('.js') or '.js?' in u:
+                  urls.append(u)
+          print('JS_URLS')
+          for u in urls[:40]: print(u)
+          pathlib.Path('/tmp/jsurls.txt').write_text('\n'.join(urls[:40]))
+          PY
+          i=0
+          while IFS= read -r u; do
+            [ -z "$u" ] && continue
+            i=$((i+1))
+            f="/tmp/bundle-$i.js"
+            curl -L --silent --show-error --max-time 30 -A "$UA" "$u" -o "$f" || continue
+            echo "--- BUNDLE $i $(wc -c <"$f") bytes $u ---"
+            grep -Eo 'wss?://[^"'"'"' )]+' "$f" | head -30 || true
+            grep -Eo 'https?://[^"'"'"' )]+' "$f" | grep -Ei 'api|quote|price|market|stream|socket|graphql|doto' | head -50 || true
+            grep -Eio '.{0,100}(XAUUSD_OTC|websocket|socket\.io|subscribe|marketdata|quotes|ticks|prices).{0,140}' "$f" | head -100 || true
+          done </tmp/jsurls.txt
