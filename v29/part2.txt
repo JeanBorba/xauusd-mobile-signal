@@ -122,7 +122,7 @@ async function fetchWeekendOtcGold() {
     const state = j?.data_state?.status || (j?.stale ? 'stale' : 'fresh');
     return {
       value, asOf, updatedAt, ageSec,
-      source: 'XAUS · OTC/INDICATIVA',
+      source: 'XAUS · XAU/USD SPOT INDICATIVO',
       state,
       stale: j?.stale === true || state === 'stale'
     };
@@ -177,6 +177,13 @@ async function fetchNormalSpotIntraday() {
   return await fetchXausIntraday('NORMAL');
 }
 
+function serverMarketSource(m) {
+  const name = String(m?.source?.name ?? m?.feed ?? m?.primary ?? '').toLowerCase();
+  const mode = String(m?.marketMode ?? '').toUpperCase();
+  if (mode === 'OTC' || name.includes('xaus-otc')) return 'OTC';
+  if (name.includes('fallback') || name.includes('xaus')) return 'SPOT_FALLBACK';
+  return 'OFFICIAL';
+}
 
 function colorFor(side) {
   return side === 'C' ? '#22c55e' : side === 'V' ? '#ef4444' : '#ffffff';
