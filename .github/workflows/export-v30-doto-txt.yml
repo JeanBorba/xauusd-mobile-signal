@@ -1,0 +1,27 @@
+name: Export V30 Doto App TXT
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/export-v30-doto-txt.yml'
+  workflow_dispatch:
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify V30 and create TXT
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'XAUUSD MOBILE SIGNAL — V30' App.js
+          grep -q 'DOTO · XAUUSD_OTC · TICK REAL' App.js
+          cp App.js XAUUSD-Mobile-Signal-V30-DOTO-REAL.txt
+      - name: Upload V30 TXT
+        uses: actions/upload-artifact@v4
+        with:
+          name: XAUUSD-Mobile-Signal-V30-DOTO-REAL
+          path: XAUUSD-Mobile-Signal-V30-DOTO-REAL.txt
+          retention-days: 30
