@@ -7,7 +7,6 @@ locale: "pt-br"
 variableGroups:
   - title: "Oracle Cloud"
     variables:
-      - tenancy_ocid
       - compartment_ocid
   - title: "Acesso seguro"
     variables:
@@ -15,18 +14,13 @@ variableGroups:
       - instance_name
 
 variables:
-  tenancy_ocid:
-    type: oci:identity:tenancy:id
-    required: true
-    title: "Tenancy"
-
   compartment_ocid:
     type: oci:identity:compartment:id
     required: true
     title: "Compartimento"
 
   ssh_public_key:
-    type: string
+    type: oci:core:ssh:publickey
     required: true
     title: "Chave pública SSH"
     description: "Cole somente a chave pública, nunca a chave privada."
