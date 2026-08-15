@@ -1,0 +1,77 @@
+name: Validate XAUUSD Server V29
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - 'server/server.js'
+      - '.github/workflows/validate-server-v29.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate server syntax and V29 rules
+        run: |
+          set -euo pipefail
+          node --check server/server.js
+          grep -q "day === 5 && minutes >= 16 \* 60" server/server.js
+          grep -q "day === 0 && minutes < 19 \* 60" server/server.js
+          grep -q "xaus-otc" server/server.js
+          grep -q "xaus-spot-fallback" server/server.js
+          grep -q "Sydney','Tóquio','Londres','N. York" server/server.js
+          echo 'Server V29 static validation: OK'
+
+      - name: Validate free XAUS source
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          async function main() {
+            const spot = await fetch('https://xaus.com/api/v1/spot?compact=1');
+            if (!spot.ok) throw new Error(`XAUS spot HTTP ${spot.status}`);
+            const s = await spot.json();
+            const price = Number(s.spot_usd_oz ?? s?.xau?.price);
+            if (!Number.isFinite(price) || price <= 0) throw new Error('XAUS spot invalid');
+            const intraday = await fetch('https://xaus.com/api/v1/intraday?symbol=xau&hours=48');
+            if (!intraday.ok) throw new Error(`XAUS intraday HTTP ${intraday.status}`);
+            const i = await intraday.json();
+            if (!Array.isArray(i.points) || i.points.length < 2) throw new Error('XAUS intraday unavailable');
+            console.log(`XAUS free source OK: spot=${price}, points=${i.points.length}`);
+          }
+          main().catch(e => { console.error(e); process.exit(1); });
+          NODE
+
+      - name: Verify Render deployed V29
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const url = 'https://xauusd-mobile-signal.onrender.com/health';
+          const sleep = ms => new Promise(r => setTimeout(r, ms));
+          async function main() {
+            let last = null;
+            for (let attempt = 1; attempt <= 24; attempt++) {
+              try {
+                const r = await fetch(`${url}?v29=${Date.now()}`, { headers: { 'Cache-Control':'no-cache' } });
+                const j = await r.json();
+                last = j;
+                const v29 = j?.ok === true && ['NORMAL','OTC'].includes(j?.marketMode);
+                const weekendHealthy = j?.marketMode !== 'OTC' || (Number(j?.lastPrice) > 0 && String(j?.primary || '').includes('xaus'));
+                if (v29 && weekendHealthy) {
+                  console.log('Render V29 OK:', JSON.stringify({marketMode:j.marketMode,primary:j.primary,lastPrice:j.lastPrice,history:j.history,sessions:j.sessions}));
+                  return;
+                }
+                console.log(`Attempt ${attempt}: waiting for V29`, JSON.stringify({marketMode:j?.marketMode,primary:j?.primary,lastPrice:j?.lastPrice}));
+              } catch (e) {
+                console.log(`Attempt ${attempt}: ${e.message}`);
+              }
+              await sleep(15000);
+            }
+            throw new Error(`Render V29 not verified: ${JSON.stringify(last)}`);
+          }
+          main().catch(e => { console.error(e); process.exit(1); });
+          NODE
