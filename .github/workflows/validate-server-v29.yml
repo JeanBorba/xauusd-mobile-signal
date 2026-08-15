@@ -1,5 +1,4 @@
-# Final post-deploy verification trigger for Server V29
-name: Validate XAUUSD Server V29
+name: Validate XAUUSD Server V30 Doto
 
 on:
   push:
@@ -14,85 +13,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Validate server syntax and V29 rules
+      - name: Validate V30 server rules
+        shell: bash
         run: |
           set -euo pipefail
           node --check server/server.js
           grep -q "day === 5 && minutes >= 16 \* 60" server/server.js
           grep -q "day === 0 && minutes < 19 \* 60" server/server.js
-          grep -q "xaus-spot-fallback" server/server.js
-          grep -q "Sydney','Tóquio','Londres','N. York" server/server.js
-          grep -q "kraken-paxg-usd-otc-proxy" server/server.js
-          echo 'Server V29 static validation: OK'
+          grep -q "app.post('/ingest/doto/ticks'" server/server.js
+          grep -q "app.post('/ingest/doto/history'" server/server.js
+          grep -q 'doto-xauusd-otc' server/server.js
+          grep -q 'DOTO XAUUSD_OTC M5 · REAL' server/server.js
+          grep -q 'waiting-doto-xauusd-otc' server/server.js
+          echo 'Server V30 static validation: OK'
 
-      - name: Validate free market sources
+      - name: Verify Render V30 and protected ingestion
+        shell: bash
         run: |
           set -euo pipefail
           node - <<'NODE'
-          async function main() {
-            const spot = await fetch('https://xaus.com/api/v1/spot?compact=1');
-            if (!spot.ok) throw new Error(`XAUS spot HTTP ${spot.status}`);
-            const s = await spot.json();
-            const xau = Number(s.spot_usd_oz ?? s?.xau?.price);
-            if (!Number.isFinite(xau) || xau <= 0) throw new Error('XAUS spot invalid');
-
-            const intraday = await fetch('https://xaus.com/api/v1/intraday?symbol=xau&hours=48');
-            if (!intraday.ok) throw new Error(`XAUS intraday HTTP ${intraday.status}`);
-            const i = await intraday.json();
-            if (!Array.isArray(i.points) || i.points.length < 2) throw new Error('XAUS intraday unavailable');
-
-            const kt = await fetch('https://api.kraken.com/0/public/Ticker?pair=PAXGUSD');
-            if (!kt.ok) throw new Error(`Kraken ticker HTTP ${kt.status}`);
-            const tj = await kt.json();
-            if (Array.isArray(tj.error) && tj.error.length) throw new Error(tj.error.join(', '));
-            const tk = Object.keys(tj.result || {})[0];
-            const paxg = Number(tk ? tj.result[tk]?.c?.[0] : NaN);
-            if (!Number.isFinite(paxg) || paxg <= 0) throw new Error('Kraken PAXG/USD ticker invalid');
-
-            const ko = await fetch('https://api.kraken.com/0/public/OHLC?pair=PAXGUSD&interval=5');
-            if (!ko.ok) throw new Error(`Kraken OHLC HTTP ${ko.status}`);
-            const oj = await ko.json();
-            if (Array.isArray(oj.error) && oj.error.length) throw new Error(oj.error.join(', '));
-            const ok = Object.keys(oj.result || {}).find(k => k !== 'last');
-            const rows = ok ? oj.result[ok] : null;
-            if (!Array.isArray(rows) || rows.length < 20) throw new Error('Kraken PAXG/USD OHLC unavailable');
-
-            console.log(`Free feeds OK: XAUS=${xau}, XAUS points=${i.points.length}, PAXG/USD=${paxg}, Kraken 5m=${rows.length}`);
-          }
-          main().catch(e => { console.error(e); process.exit(1); });
-          NODE
-
-      - name: Verify Render deployed V29
-        run: |
-          set -euo pipefail
-          node - <<'NODE'
-          const url = 'https://xauusd-mobile-signal.onrender.com/health';
-          const sleep = ms => new Promise(r => setTimeout(r, ms));
-          async function main() {
-            let last = null;
-            for (let attempt = 1; attempt <= 24; attempt++) {
-              try {
-                const r = await fetch(`${url}?v29=${Date.now()}`, { headers: { 'Cache-Control':'no-cache' } });
-                const j = await r.json();
-                last = j;
-                const v29 = j?.ok === true && ['NORMAL','OTC'].includes(j?.marketMode);
-                const p = String(j?.primary || '').toLowerCase();
-                const weekendHealthy = j?.marketMode !== 'OTC' || (Number(j?.lastPrice) > 0 && (p.includes('kraken') || p.includes('paxg') || p.includes('xaus')));
-                const historyHealthy = j?.marketMode !== 'OTC' || Number(j?.history?.count || 0) >= 20;
-                if (v29 && weekendHealthy && historyHealthy) {
-                  console.log('Render V29 OK:', JSON.stringify({marketMode:j.marketMode,primary:j.primary,lastPrice:j.lastPrice,history:j.history,sessions:j.sessions}));
+          const base='https://xauusd-mobile-signal.onrender.com';
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          async function main(){
+            let last=null;
+            for(let i=1;i<=24;i++){
+              try{
+                const r=await fetch(base+'/health?v30='+Date.now(),{headers:{'Cache-Control':'no-cache'}});
+                const j=await r.json(); last=j;
+                const hasDoto=Object.prototype.hasOwnProperty.call(j,'doto');
+                const noProxy=j.marketMode!=='OTC'||!String(j.primary||'').toLowerCase().includes('kraken');
+                if(j.ok===true&&hasDoto&&noProxy){
+                  const unauthorized=await fetch(base+'/ingest/doto/ticks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:'XAUUSD_OTC',ticks:[]})});
+                  if(unauthorized.status!==401) throw new Error('Doto ingest protection expected 401, got '+unauthorized.status);
+                  console.log('Render V30 Doto OK:',JSON.stringify({marketMode:j.marketMode,primary:j.primary,lastPrice:j.lastPrice,history:j.history,doto:j.doto,sessions:j.sessions}));
                   return;
                 }
-                console.log(`Attempt ${attempt}: waiting for V29`, JSON.stringify({marketMode:j?.marketMode,primary:j?.primary,lastPrice:j?.lastPrice,history:j?.history}));
-              } catch (e) {
-                console.log(`Attempt ${attempt}: ${e.message}`);
-              }
+                console.log('Waiting V30',i,JSON.stringify({marketMode:j?.marketMode,primary:j?.primary,hasDoto}));
+              }catch(e){console.log('Waiting V30',i,e.message)}
               await sleep(15000);
             }
-            throw new Error(`Render V29 not verified: ${JSON.stringify(last)}`);
+            throw new Error('Render V30 validation failed: '+JSON.stringify(last));
           }
-          main().catch(e => { console.error(e); process.exit(1); });
+          main().catch(e=>{console.error(e);process.exit(1)});
           NODE
