@@ -1,0 +1,158 @@
+name: Upgrade Weekend OTC Proxy
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/upgrade-weekend-proxy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch server for dynamic 24/7 weekend proxy
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('server/server.js')
+          s=p.read_text()
+          if 'KRAKEN_PAXG_TICKER' not in s:
+              s=s.replace("const XAUS_INTRADAY = 'https://xaus.com/api/v1/intraday';", "const XAUS_INTRADAY = 'https://xaus.com/api/v1/intraday';\nconst KRAKEN_PAXG_TICKER = 'https://api.kraken.com/0/public/Ticker?pair=PAXGUSD';\nconst KRAKEN_PAXG_OHLC = 'https://api.kraken.com/0/public/OHLC?pair=PAXGUSD&interval=5';")
+
+              old="""  const src = source?.name || 'unknown';
+  const mode = marketMode(new Date(ts));
+  if (mode === 'OTC' && src !== 'xaus-otc') return;
+  if (mode === 'NORMAL' && src === 'xaus-otc') return;"""
+              new="""  const src = source?.name || 'unknown';
+  const mode = marketMode(new Date(ts));
+  const sourceMode = source?.marketSource === 'OTC' ? 'OTC' : 'NORMAL';
+  if (mode !== sourceMode) return;"""
+              assert old in s
+              s=s.replace(old,new,1)
+
+              needle="async function fetchXausHistory(mode = marketMode()) {"
+              assert needle in s
+              kraken="""async function fetchKrakenPaxgTicker() {
+  const j = await fetchJson(`${KRAKEN_PAXG_TICKER}&_=${Date.now()}`, { 'User-Agent':'XAUUSD-Mobile-Signal/2.0' });
+  if (Array.isArray(j?.error) && j.error.length) throw new Error(`Kraken: ${j.error.join(', ')}`);
+  const result = j?.result || {};
+  const key = Object.keys(result)[0];
+  const row = key ? result[key] : null;
+  const price = n(row?.c?.[0]);
+  const bid = n(row?.b?.[0]);
+  const ask = n(row?.a?.[0]);
+  if (!finite(price) || price <= 0) throw new Error('Kraken PAXG/USD sem preço');
+  return { price, bid, ask, asOf: now() };
+}
+
+async function fetchKrakenPaxgHistory() {
+  const j = await fetchJson(`${KRAKEN_PAXG_OHLC}&_=${Date.now()}`, { 'User-Agent':'XAUUSD-Mobile-Signal/2.0' });
+  if (Array.isArray(j?.error) && j.error.length) throw new Error(`Kraken OHLC: ${j.error.join(', ')}`);
+  const result = j?.result || {};
+  const key = Object.keys(result).find(k => k !== 'last');
+  const rows = key && Array.isArray(result[key]) ? result[key] : [];
+  const cutoff = bucket(now(), 300);
+  const out = [];
+  for (const r of rows) {
+    const t = Number(r?.[0]) * 1000;
+    if (!Number.isFinite(t) || t >= cutoff || marketMode(new Date(t)) !== 'OTC') continue;
+    const o=n(r?.[1]), h=n(r?.[2]), l=n(r?.[3]), c=n(r?.[4]);
+    if (![o,h,l,c].every(finite)) continue;
+    out.push({ t:bucket(t,300), o,h,l,c, volume:n(r?.[6]), delta:null, closed:true, marketSource:'OTC' });
+  }
+  return out.sort((a,b)=>a.t-b.t).slice(-HISTORY_SIZE);
+}
+
+"""
+              s=s.replace(needle,kraken+needle,1)
+
+              old="""    const mode = marketMode();
+    const rows = await fetchXausHistory(mode);
+    if (rows.length) replaceHistory(rows, mode === 'OTC' ? 'XAUS OTC 2M→5M' : 'XAUS XAUUSD SPOT 2M→5M');
+    else {"""
+              new="""    const mode = marketMode();
+    let rows = [];
+    let source = '';
+    if (mode === 'OTC') {
+      try {
+        rows = await fetchKrakenPaxgHistory();
+        if (rows.length) source = 'KRAKEN PAXG/USD 5M · OTC PROXY';
+      } catch (e) { console.warn('[KRAKEN HISTORY]', e.message); }
+    }
+    if (!rows.length) {
+      rows = await fetchXausHistory(mode);
+      if (rows.length) source = mode === 'OTC' ? 'XAUS OTC 2M→5M · FALLBACK' : 'XAUS XAUUSD SPOT 2M→5M';
+    }
+    if (rows.length) replaceHistory(rows, source);
+    else {"""
+              assert old in s
+              s=s.replace(old,new,1)
+
+              start=s.index('async function updateXausFeed() {')
+              end=s.index('\nasync function monitorMode()',start)
+              newfun="""async function updateMarketFeed() {
+  const mode = marketMode();
+  if (mode === 'OTC') {
+    /* Fim de semana: PAXG/USD da Kraken é uma referência 24/7 dinâmica,
+       sem chave. É explicitamente um proxy OTC do ouro, não o XAUUSD
+       executável de uma corretora. XAUS fica como fallback de referência. */
+    try {
+      const q = await fetchKrakenPaxgTicker();
+      emitTick(q.price, q.asOf, {
+        name:'kraken-paxg-usd-otc-proxy', bid:q.bid, ask:q.ask,
+        marketSource:'OTC', indicative:true, proxy:true
+      });
+      return;
+    } catch (e) { console.warn('[KRAKEN PAXG]', e.message); }
+    try {
+      const q = await fetchXausSpot();
+      if (!q.stale && q.ageSec <= XAUS_STALE_SEC) {
+        emitTick(q.price,q.asOf,{name:'xaus-otc-fallback',bid:null,ask:null,marketSource:'OTC',indicative:true});
+      }
+    } catch(e) { console.warn('[XAUS OTC]',e.message); }
+    return;
+  }
+
+  /* Mercado normal: Brokeret/WSS é prioritário. Se não entregar tick
+     recente, XAUS assume gratuitamente até o feed oficial retornar. */
+  const officialFresh=lastOfficialTickAt>0&&(now()-lastOfficialTickAt)/1000<=OFFICIAL_STALE_SEC;
+  if (officialFresh) return;
+  try {
+    const q=await fetchXausSpot();
+    if(!q.stale&&q.ageSec<=XAUS_STALE_SEC){
+      emitTick(q.price,q.asOf,{name:'xaus-spot-fallback',bid:null,ask:null,marketSource:'SPOT_FALLBACK',indicative:true});
+    }
+  } catch(e) { console.warn('[XAUS]',e.message); }
+}
+"""
+              s=s[:start]+newfun+s[end:]
+              s=s.replace('await updateXausFeed();','await updateMarketFeed();')
+              s=s.replace('updateXausFeed();','updateMarketFeed();')
+              s=s.replace('setInterval(updateXausFeed,XAUS_REFRESH_MS);','setInterval(updateMarketFeed,XAUS_REFRESH_MS);')
+          p.write_text(s)
+          PY
+          node --check server/server.js
+          grep -q 'kraken-paxg-usd-otc-proxy' server/server.js
+          grep -q 'KRAKEN PAXG/USD 5M · OTC PROXY' server/server.js
+
+      - name: Commit upgraded server
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/server.js
+          if git diff --cached --quiet; then
+            echo 'Weekend proxy already upgraded.'
+          else
+            git commit -m 'Use free Kraken PAXG/USD as dynamic weekend OTC proxy'
+            git push
+          fi
