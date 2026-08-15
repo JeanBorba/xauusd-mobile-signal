@@ -1,0 +1,265 @@
+/* XAUUSD MOBILE SIGNAL — V23 | VWAP + PRESSURE + ESTRUTURA OB / BOS / CHoCH */
+/* ARQUIVO App.js — conteúdo pronto para colar diretamente no Snack/Expo. */
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SafeAreaView, View, Text, StyleSheet, Pressable, ScrollView, StatusBar } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+/*
+ XAUUSD MOBILE SIGNAL — V23 DASHBOARD
+ Base: V16/V17
+ Objetivo desta versão:
+ - preservar o motor de histórico persistente;
+ - usar somente candles fechados nos indicadores;
+ - calcular DXY a partir da cesta ICE quando houver FX intraday;
+ - manter fallback do servidor para DXY;
+ - apresentar o dashboard no formato do exemplo fornecido;
+ - verde = COMPRA/ALTA, vermelho = VENDA/BAIXA, branco = NEUTRO;
+ - usar OTC online como alimentação temporária do motor somente no fechamento semanal;
+ - restaurar automaticamente o feed oficial e remover candles OTC na reabertura;
+ - calcular VWAP por volume quando disponível e TICK/EQUAL quando não houver volume;
+ - calcular pressão por delta de ticks quando disponível, com fallback causal por candles.
+*/
+
+const WS_URL = 'wss://xauusd-mobile-signal.onrender.com/stream';
+const HEALTH_URL = 'https://xauusd-mobile-signal.onrender.com/health';
+const YAHOO = 'https://query1.finance.yahoo.com';
+
+const HISTORY_KEY = '@xauusd_monitor/candles_5m_v27';
+const MAX_CANDLES = 500;
+const CANDLE_MS = 5 * 60 * 1000;
+
+const DXY_REFRESH_MS = 60000;
+const DXY_STALE_SEC = 120;
+const DXY_MAX_AGE_SEC = 600;
+const DXY_REQUEST_TIMEOUT_MS = 6500;
+const DXY_CALC_COOLDOWN_MS = 60000;
+
+/* Horários oficiais solicitados pelo projeto, em BRT, sem ajuste manual de DST.
+   Sydney: 19:00–04:00 (virada do dia)
+   Tóquio: 21:00–06:00 (virada do dia)
+   Londres: 04:00–12:00
+   N. York: 09:00–16:00
+*/
+const SESSIONS = [
+  { id: 'SYD', name: 'Sydney', openLocal: '19:00', closeLocal: '04:00' },
+  { id: 'TKO', name: 'Tóquio', openLocal: '21:00', closeLocal: '06:00' },
+  { id: 'LON', name: 'Londres', openLocal: '04:00', closeLocal: '12:00' },
+  { id: 'NYC', name: 'N. York', openLocal: '09:00', closeLocal: '16:00' }
+];
+const BR_TZ = 'America/Sao_Paulo';
+const WEEKEND_OTC_URL = 'https://xaus.com/api/v1/spot';
+const OTC_REFRESH_MS = 30000;
+const OTC_STALE_SEC = 90;
+
+/* ICE DXY:
+   50.14348112 * EURUSD^-0.576 * USDJPY^0.136 * GBPUSD^-0.119
+                  * USDCAD^0.091 * USDSEK^0.042 * USDCHF^0.036
+*/
+const DXY_BASKET = [
+  ['EURUSD', 'EURUSD=X', -0.576],
+  ['USDJPY', 'USDJPY=X',  0.136],
+  ['GBPUSD', 'GBPUSD=X', -0.119],
+  ['USDCAD', 'USDCAD=X',  0.091],
+  ['USDSEK', 'USDSEK=X',  0.042],
+  ['USDCHF', 'USDCHF=X',  0.036]
+];
+const DXY_BASE = 50.14348112;
+
+function finite(v) {
+  return Number.isFinite(Number(v));
+}
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+function fmt(v) {
+  return finite(v) ? Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--';
+}
+function pct(v) {
+  return finite(v) ? `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}%` : '--';
+}
+function normalizeTime(v) {
+  if (v == null) return NaN;
+  if (typeof v === 'number') return v < 100000000000 ? v * 1000 : v;
+  const s = String(v).trim();
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = Number(s);
+    return n < 100000000000 ? n * 1000 : n;
+  }
+  const p = Date.parse(s);
+  return Number.isFinite(p) ? p : NaN;
+}
+function normalizeCandle(c) {
+  const t = normalizeTime(c?.t ?? c?.ts ?? c?.time ?? c?.timestamp ?? c?.datetime);
+  const o = num(c?.o ?? c?.open);
+  const h = num(c?.h ?? c?.high);
+  const l = num(c?.l ?? c?.low);
+  const close = num(c?.c ?? c?.close);
+  if (!finite(t) || ![o, h, l, close].every(finite)) return null;
+  return {
+    t: Math.floor(t / CANDLE_MS) * CANDLE_MS,
+    o, h, l, c: close,
+    volume: num(c?.volume ?? c?.v ?? c?.tickVolume ?? c?.tick_volume),
+    delta: num(c?.delta),
+    marketSource: c?.marketSource || c?.source || 'OFFICIAL',
+    closed: c?.closed !== false
+  };
+}
+function mergeCandles(...lists) {
+  const map = new Map();
+  lists.flat().forEach(raw => {
+    const c = normalizeCandle(raw);
+    if (!c) return;
+    const old = map.get(c.t);
+    if (!old) {
+      map.set(c.t, c);
+      return;
+    }
+    /* Mantém o melhor registro disponível. Nunca apaga delta/volume
+       coletados pelo feed apenas porque o histórico público também
+       contém OHLC para o mesmo candle. */
+    map.set(c.t, {
+      ...old,
+      ...c,
+      volume: finite(c.volume) && c.volume > 0 ? c.volume : old.volume,
+      delta: finite(c.delta) ? c.delta : old.delta,
+      closed: old.closed !== false || c.closed !== false
+    });
+  });
+  return Array.from(map.values()).sort((a, b) => a.t - b.t).slice(-MAX_CANDLES);
+}
+async function loadStoredCandles() {
+  try {
+    const raw = await AsyncStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? mergeCandles(parsed) : [];
+  } catch (_) { return []; }
+}
+async function saveStoredCandles(candles) {
+  try {
+    const closed = candles.filter(c => c.closed !== false).slice(-MAX_CANDLES);
+    await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(closed));
+  } catch (_) {}
+}
+async function fetchPublicXauHistory() {
+  try {
+    const r = await fetch(`${YAHOO}/v8/finance/chart/XAUUSD%3DX?range=5d&interval=5m&includePrePost=true`);
+    if (r.ok) {
+      const j = await r.json();
+      const result = j?.chart?.result?.[0];
+      const q = result?.indicators?.quote?.[0];
+      const ts = result?.timestamp || [];
+      const rows = [];
+      for (let i = 0; i < ts.length; i++) {
+        const o = num(q?.open?.[i]), h = num(q?.high?.[i]);
+        const l = num(q?.low?.[i]), c = num(q?.close?.[i]);
+        if ([o, h, l, c].every(finite)) rows.push({ t: Number(ts[i]) * 1000, o, h, l, c, volume: num(q?.volume?.[i]), closed: true });
+      }
+      const current = Math.floor(Date.now() / CANDLE_MS) * CANDLE_MS;
+      const closed = rows.filter(c => c.t < current);
+      if (closed.length >= 20) return closed.slice(-MAX_CANDLES);
+    }
+  } catch (_) {}
+  return [];
+}
+function calcRSI(closes, p = 14) {
+  if (!Array.isArray(closes) || closes.length < p + 1) return null;
+  const d = [];
+  for (let i = 1; i < closes.length; i++) d.push(closes[i] - closes[i - 1]);
+  let gain = 0, loss = 0;
+  for (let i = 0; i < p; i++) {
+    if (d[i] >= 0) gain += d[i]; else loss += Math.abs(d[i]);
+  }
+  let ag = gain / p, al = loss / p;
+  for (let i = p; i < d.length; i++) {
+    ag = (ag * (p - 1) + Math.max(d[i], 0)) / p;
+    al = (al * (p - 1) + Math.max(-d[i], 0)) / p;
+  }
+  if (al === 0) return 100;
+  if (ag === 0) return 0;
+  return +(100 - 100 / (1 + ag / al)).toFixed(2);
+}
+function calcEMA(closes, p = 20) {
+  if (!Array.isArray(closes) || closes.length < p) return null;
+  let e = closes.slice(0, p).reduce((a, b) => a + b, 0) / p;
+  const k = 2 / (p + 1);
+  for (let i = p; i < closes.length; i++) e = closes[i] * k + e * (1 - k);
+  return +e.toFixed(2);
+}
+function calcADX(highs, lows, closes, p = 14) {
+  if (!highs || highs.length !== lows.length || highs.length !== closes.length || highs.length < p * 2 + 1) return null;
+  const tr = [], plusDM = [], minusDM = [];
+  for (let i = 1; i < highs.length; i++) {
+    const up = highs[i] - highs[i - 1];
+    const down = lows[i - 1] - lows[i];
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+  }
+  let atr = 0, pdm = 0, mdm = 0;
+  for (let i = 0; i < p; i++) { atr += tr[i]; pdm += plusDM[i]; mdm += minusDM[i]; }
+  atr /= p; pdm /= p; mdm /= p;
+  const dx = [], plus = [], minus = [];
+  const push = () => {
+    const pi = atr > 0 ? 100 * pdm / atr : 0;
+    const mi = atr > 0 ? 100 * mdm / atr : 0;
+    plus.push(pi); minus.push(mi);
+    dx.push(pi + mi === 0 ? 0 : 100 * Math.abs(pi - mi) / (pi + mi));
+  };
+  push();
+  for (let i = p; i < tr.length; i++) {
+    atr = (atr * (p - 1) + tr[i]) / p;
+    pdm = (pdm * (p - 1) + plusDM[i]) / p;
+    mdm = (mdm * (p - 1) + minusDM[i]) / p;
+    push();
+  }
+  if (dx.length < p) return null;
+  let adx = dx.slice(0, p).reduce((a, b) => a + b, 0) / p;
+  for (let i = p; i < dx.length; i++) adx = (adx * (p - 1) + dx[i]) / p;
+  const last = plus.length - 1;
+  return { adx: +adx.toFixed(1), plusDI: +plus[last].toFixed(1), minusDI: +minus[last].toFixed(1), atr: +atr.toFixed(3) };
+}
+function detectFVG(highs, lows, times, atr) {
+  if (!highs || highs.length < 5) return [];
+  const minGap = atr > 0 ? Math.max(0.12, atr * 0.10) : 0.20;
+  const zones = [];
+  for (let i = 0; i < highs.length - 2; i++) {
+    if (lows[i + 2] > highs[i]) {
+      const gap = lows[i + 2] - highs[i];
+      if (gap >= minGap) zones.push({ tipo: 'ALTA', inf: highs[i], sup: lows[i + 2], tam: gap, created: times[i + 2] });
+    }
+    if (highs[i + 2] < lows[i]) {
+      const gap = lows[i] - highs[i + 2];
+      if (gap >= minGap) zones.push({ tipo: 'BAIXA', inf: highs[i + 2], sup: lows[i], tam: gap, created: times[i + 2] });
+    }
+  }
+  return zones.filter(z => {
+    const idx = times.indexOf(z.created);
+    if (idx < 0) return true;
+    for (let j = idx + 1; j < lows.length; j++) {
+      if (z.tipo === 'ALTA' && lows[j] <= z.inf) return false;
+      if (z.tipo === 'BAIXA' && highs[j] >= z.sup) return false;
+    }
+    return true;
+  }).slice(-10);
+}
+function detectSwingPoints(candles, left = 2, right = 2) {
+  const highs = [], lows = [];
+  if (!Array.isArray(candles) || candles.length < left + right + 3) return { highs, lows };
+  for (let i = left; i < candles.length - right; i++) {
+    let isHigh = true, isLow = true;
+    for (let j = 1; j <= left; j++) {
+      if (candles[i].h <= candles[i - j].h) isHigh = false;
+      if (candles[i].l >= candles[i - j].l) isLow = false;
+    }
+    for (let j = 1; j <= right; j++) {
+      if (candles[i].h < candles[i + j].h) isHigh = false;
+      if (candles[i].l > candles[i + j].l) isLow = false;
+    }
+    if (isHigh) highs.push({ index: i, price: candles[i].h, time: candles[i].t });
+    if (isLow) lows.push({ index: i, price: candles[i].l, time: candles[i].t });
+  }
+  return { highs, lows };
+}
