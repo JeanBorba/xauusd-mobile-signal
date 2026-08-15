@@ -1,0 +1,30 @@
+name: Probe Doto Config
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-doto-config.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Inspect Doto endpoint bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -L --fail --silent --show-error --max-time 30 'https://client.doto.com/assets/server-tWFzCgKR.js' -o /tmp/server.js
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          s=Path('/tmp/server.js').read_text(errors='replace')
+          needles=['G_.set','G_(', 'connectionUrl','websocket','webSocket','socketUrl','wsUrl','baseUrl','apiUrls','apiUrl','servers','/v1.0/config','/config','q_']
+          for needle in needles:
+              print('\n===== ',needle,' =====')
+              hits=[m.start() for m in re.finditer(re.escape(needle),s)]
+              print('hits',len(hits))
+              for i in hits[:20]: print(s[max(0,i-900):min(len(s),i+1600)],'\n---')
+          PY
