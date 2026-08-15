@@ -1,0 +1,30 @@
+name: Probe XAUUSD OTC Feed V2
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-xauusd-otc-v2.yml'
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Probe variants
+        run: |
+          set -u
+          for u in \
+            'http://alltradingapi.com/live/qx_live.ts?asset=XAUUSD_otc' \
+            'https://alltradingapi.com/live/qx_live.ts?asset=XAUUSD_otc' \
+            'http://alltradingapi.com/live/qx_live.ts?asset=xauusd_otc' \
+            'https://alltradingapi.com/live/qx_live.ts?asset=xauusd_otc' \
+            'https://alltradingapi.com/live/qx_live.js?asset=XAUUSD_otc'; do
+            echo "===== $u ====="
+            curl -L --silent --show-error --max-time 20 -A 'Mozilla/5.0' -w '\nHTTP=%{http_code} FINAL=%{url_effective}\n' "$u" | head -c 10000 || true
+            echo
+          done
+          echo '===== checker ====='
+          curl -L --silent --show-error --max-time 20 -A 'Mozilla/5.0' -w '\nHTTP=%{http_code} FINAL=%{url_effective}\n' \
+            'http://alltradingapi.com/checker/otc_checker.ts?pair=XAUUSD_otc&start_time=00:00&end_time=23:59&day=0' | head -c 10000 || true
+          echo
