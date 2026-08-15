@@ -1,0 +1,23 @@
+name: Probe Doto Public WS Parallel
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-doto-public-ws-parallel.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Probe all websocket candidates concurrently
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const candidates=['wss://api.doto.com/api/v2.0/ws','wss://api.doto.com/v2.0/ws','wss://api.doto-1a.com/api/v2.0/ws','wss://api.doto-1a.com/v2.0/ws','wss://api.doto-1b.com/api/v2.0/ws','wss://api.doto-1b.com/v2.0/ws','wss://api.doto-1c.com/api/v2.0/ws','wss://api.doto-1c.com/v2.0/ws'];
+          function probe(url){return new Promise(resolve=>{let ws,done=false,msg=[];const finish=why=>{if(done)return;done=true;try{ws.close()}catch{};resolve({url,why,msg})};try{ws=new WebSocket(url)}catch(e){return resolve({url,why:e.message,msg})}const tm=setTimeout(()=>finish('timeout'),9000);ws.onopen=()=>{msg.push('OPEN');ws.send(JSON.stringify({commands:[{type:'V01_T_TickSubscribe',symbols:['XAUUSD_OTC']},{type:'V01_T_MarketWatchSubscribe',symbols:['XAUUSD_OTC']}]}))};ws.onmessage=e=>{let x=String(e.data);msg.push(x.slice(0,2500));if(x.includes('XAUUSD_OTC')&&(x.includes('V01_T_Tick')||x.includes('V01_T_MarketWatch'))){clearTimeout(tm);finish('GOT_XAUUSD_OTC')}};ws.onerror=()=>msg.push('ERROR');ws.onclose=e=>{clearTimeout(tm);finish('CLOSE '+e.code+' '+e.reason)}})}
+          Promise.all(candidates.map(probe)).then(rs=>{for(const r of rs)console.log('RESULT',JSON.stringify(r));if(rs.some(r=>r.why==='GOT_XAUUSD_OTC'))process.exit(0)}).catch(e=>{console.error(e);process.exit(1)});
+          NODE
