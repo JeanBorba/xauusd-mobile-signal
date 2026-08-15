@@ -1,0 +1,37 @@
+name: Find Doto Connection Setter
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/find-doto-connection-setter.yml'
+  workflow_dispatch:
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Crawl loaded Doto JS and locate dynamic websocket URL setter
+        shell: bash
+        run: |
+          set -euo pipefail
+          UA='Mozilla/5.0'
+          curl -L --fail --silent --show-error --max-time 30 'https://client.doto.com/web-trading/doto?symbol=XAUUSD_OTC' -o /tmp/index.html
+          python - <<'PY'
+          import re, pathlib, urllib.parse
+          s=pathlib.Path('/tmp/index.html').read_text(errors='replace')
+          urls=[]
+          for x in re.findall(r'(?:src|href)=["\']([^"\']+\.js[^"\']*)',s,re.I):
+              urls.append(urllib.parse.urljoin('https://client.doto.com/',x))
+          pathlib.Path('/tmp/seed').write_text('\n'.join(dict.fromkeys(urls)))
+          PY
+          mkdir -p /tmp/js
+          fetch_one(){ u="$1"; f="/tmp/js/$(basename "${u%%\?*}")"; curl -L --silent --show-error --max-time 25 -A "$UA" "$u" -o "$f" || return 0; grep -Eo '"\./[^" ]+\.js"' "$f" | tr -d '"' | sed 's#^\./#https://client.doto.com/assets/#' >>/tmp/discovered || true; }
+          : >/tmp/discovered
+          while IFS= read -r u; do [ -n "$u" ] && fetch_one "$u"; done </tmp/seed
+          sort -u /tmp/discovered >/tmp/discovered2
+          head -n 120 /tmp/discovered2 | while IFS= read -r u; do [ -n "$u" ] && fetch_one "$u"; done
+          echo 'FILES='$(find /tmp/js -type f | wc -l)
+          echo '--- imports of dynamic G export / setters / URLs ---'
+          grep -R -n -E 'G as [A-Za-z_$][A-Za-z0-9_$]*|from"\./server-tWFzCgKR\.js"|doto-1[a-c]|/v2\.0/ws|connectionUrl|updateConnectionUrl|accounts/servers' /tmp/js | head -500 || true
