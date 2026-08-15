@@ -1,0 +1,40 @@
+name: Verify Render V30 Doto
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/verify-render-v30-doto.yml'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Wait for V30 on Render
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const url='https://xauusd-mobile-signal.onrender.com/health';
+          const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+          (async()=>{
+            let last=null;
+            for(let i=1;i<=32;i++){
+              try{
+                const r=await fetch(url+'?v30='+Date.now(),{headers:{'Cache-Control':'no-cache'}});
+                const j=await r.json(); last=j;
+                const hasDoto=Object.prototype.hasOwnProperty.call(j,'doto');
+                const otcOk=j.marketMode!=='OTC'||!String(j.primary||'').toLowerCase().includes('kraken');
+                if(j.ok===true&&hasDoto&&otcOk){
+                  console.log('RENDER_V30_OK',JSON.stringify({marketMode:j.marketMode,primary:j.primary,lastPrice:j.lastPrice,history:j.history,doto:j.doto,sessions:j.sessions}));
+                  return;
+                }
+                console.log('WAIT',i,JSON.stringify({marketMode:j.marketMode,primary:j.primary,hasDoto}));
+              }catch(e){console.log('WAIT',i,e.message)}
+              await sleep(15000);
+            }
+            throw new Error('Render V30 not confirmed: '+JSON.stringify(last));
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
