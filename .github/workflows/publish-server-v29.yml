@@ -1,0 +1,78 @@
+name: Publish Server V29
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - 'server-v29/**'
+      - '.github/workflows/publish-server-v29.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assemble and validate server
+        run: |
+          set -euo pipefail
+          cat server-v29/part0.txt server-v29/part1.txt server-v29/part2.txt server-v29/part3.txt > server/server.js
+          node --check server/server.js
+          grep -q 'KRAKEN_PAXG_TICKER' server/server.js
+          grep -q 'kraken-paxg-usd-otc-proxy' server/server.js
+          grep -q 'KRAKEN PAXG/USD 5M · OTC PROXY' server/server.js
+          grep -q "day === 5 && minutes >= 16 \* 60" server/server.js
+          grep -q "day === 0 && minutes < 19 \* 60" server/server.js
+          echo 'Server V29 assembled and syntax OK'
+
+      - name: Test free feeds
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          async function main() {
+            const kt = await fetch('https://api.kraken.com/0/public/Ticker?pair=PAXGUSD');
+            if (!kt.ok) throw new Error(`Kraken ticker HTTP ${kt.status}`);
+            const tj = await kt.json();
+            if (Array.isArray(tj.error) && tj.error.length) throw new Error(tj.error.join(', '));
+            const tk = Object.keys(tj.result || {})[0];
+            const paxg = Number(tk ? tj.result[tk]?.c?.[0] : NaN);
+            if (!Number.isFinite(paxg) || paxg <= 0) throw new Error('Kraken PAXG/USD invalid');
+
+            const ko = await fetch('https://api.kraken.com/0/public/OHLC?pair=PAXGUSD&interval=5');
+            if (!ko.ok) throw new Error(`Kraken OHLC HTTP ${ko.status}`);
+            const oj = await ko.json();
+            if (Array.isArray(oj.error) && oj.error.length) throw new Error(oj.error.join(', '));
+            const ok = Object.keys(oj.result || {}).find(k => k !== 'last');
+            const rows = ok ? oj.result[ok] : [];
+            if (!Array.isArray(rows) || rows.length < 20) throw new Error('Kraken OHLC insufficient');
+
+            const xs = await fetch('https://xaus.com/api/v1/spot?compact=1');
+            if (!xs.ok) throw new Error(`XAUS HTTP ${xs.status}`);
+            const xj = await xs.json();
+            const xau = Number(xj.spot_usd_oz ?? xj?.xau?.price);
+            if (!Number.isFinite(xau) || xau <= 0) throw new Error('XAUS invalid');
+            console.log(`Free feeds OK | PAXG/USD=${paxg} | Kraken5m=${rows.length} | XAUS=${xau}`);
+          }
+          main().catch(e => { console.error(e); process.exit(1); });
+          NODE
+
+      - name: Commit server
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add server/server.js
+          if git diff --cached --quiet; then
+            echo 'Server V29 already published.'
+          else
+            git commit -m 'Publish Server V29 with automatic free OTC proxy'
+            git push
+          fi
