@@ -1,0 +1,68 @@
+name: Probe Doto Public WS
+
+on:
+  push:
+    branches: [server-v1]
+    paths:
+      - '.github/workflows/probe-doto-public-ws.yml'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Test websocket candidates without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          node - <<'NODE'
+          const candidates = [
+            'wss://api.doto.com/api/v2.0/ws',
+            'wss://api.doto.com/v2.0/ws',
+            'wss://api.doto-1a.com/api/v2.0/ws',
+            'wss://api.doto-1a.com/v2.0/ws',
+            'wss://api.doto-1b.com/api/v2.0/ws',
+            'wss://api.doto-1b.com/v2.0/ws',
+            'wss://api.doto-1c.com/api/v2.0/ws',
+            'wss://api.doto-1c.com/v2.0/ws'
+          ];
+          async function probe(url) {
+            return new Promise(resolve => {
+              let done=false, gotTick=false, messages=[];
+              const finish=(why)=>{ if(done)return; done=true; try{ws.close()}catch{}; resolve({url,why,gotTick,messages}); };
+              let ws;
+              try { ws = new WebSocket(url); } catch(e) { return resolve({url,why:'ctor '+e.message,gotTick:false,messages:[]}); }
+              const timer=setTimeout(()=>{clearTimeout(timer);finish('timeout')},8000);
+              ws.onopen=()=>{
+                try {
+                  ws.send(JSON.stringify({commands:[
+                    {type:'V01_T_TickSubscribe',symbols:['XAUUSD_OTC']},
+                    {type:'V01_T_MarketWatchSubscribe',symbols:['XAUUSD_OTC']},
+                    {type:'V01_T_SymbolsSubscribe',symbols:['XAUUSD_OTC']}
+                  ]}));
+                } catch(e){ messages.push('send:'+e.message); }
+              };
+              ws.onmessage=e=>{
+                const text=String(e.data);
+                messages.push(text.slice(0,1500));
+                try {
+                  const j=JSON.parse(text);
+                  if(j?.t==='V01_T_Tick' || j?.t==='V01_T_MarketWatch') {
+                    const d=j?.d;
+                    if(JSON.stringify(d).includes('XAUUSD_OTC')) gotTick=true;
+                  }
+                }catch{}
+                if(gotTick) { clearTimeout(timer); finish('tick'); }
+              };
+              ws.onerror=e=>messages.push('error');
+              ws.onclose=e=>{ clearTimeout(timer); finish(`close ${e.code} ${e.reason||''}`); };
+            });
+          }
+          (async()=>{
+            for(const u of candidates){
+              const r=await probe(u);
+              console.log('\nRESULT',JSON.stringify(r));
+            }
+          })().catch(e=>{console.error(e);process.exit(1)});
+          NODE
