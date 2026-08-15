@@ -725,6 +725,8 @@ export default function App() {
   const [spotFallback, setSpotFallback] = useState(null);
   const otcRef = useRef(null);
   const lastOfficialTickRef = useRef(0);
+  const lastServerOtcTickRef = useRef(0);
+  const lastServerFallbackTickRef = useRef(0);
   const currentSourceRef = useRef('OFFICIAL');
   const [price, setPrice] = useState(null);
   const [bid, setBid] = useState(null);
@@ -830,7 +832,17 @@ export default function App() {
           const tsRaw = Number(m.ts);
           const ts = finite(tsRaw) ? (tsRaw < 100000000000 ? tsRaw * 1000 : tsRaw) : Date.now();
           const src = serverMarketSource(m);
-          if (src === 'OFFICIAL') lastOfficialTickRef.current = Date.now();
+          if (src === 'OFFICIAL') {
+            lastOfficialTickRef.current = Date.now();
+            setSpotFallback(null);
+          } else if (src === 'OTC') {
+            lastServerOtcTickRef.current = Date.now();
+            const sourceName = String(m.source?.name || 'SERVIDOR OTC');
+            setWeekendOtc({ value:Number(m.price), asOf:ts, ageSec:0, stale:false, source: sourceName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK' });
+          } else if (src === 'SPOT_FALLBACK') {
+            lastServerFallbackTickRef.current = Date.now();
+            setSpotFallback({ value:Number(m.price), asOf:ts, ageSec:0, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
+          }
           addTick(Number(m.price), ts, Number(m.source?.bid), Number(m.source?.ask), src);
         }
         if (m.type === 'market_state') {
@@ -854,8 +866,19 @@ export default function App() {
           }
           if (finite(m.price)) {
             const src = serverMarketSource(m);
-            if (src === 'OFFICIAL') lastOfficialTickRef.current = Date.now();
-            addTick(Number(m.price), finite(m.serverTime) ? Number(m.serverTime) : Date.now(), null, null, src);
+            const serverTs = finite(m.serverTime) ? Number(m.serverTime) : Date.now();
+            if (src === 'OFFICIAL') {
+              lastOfficialTickRef.current = Date.now();
+              setSpotFallback(null);
+            } else if (src === 'OTC') {
+              lastServerOtcTickRef.current = Date.now();
+              const feedName = String(m.feed || 'SERVIDOR OTC');
+              setWeekendOtc({ value:Number(m.price), asOf:serverTs, ageSec:0, stale:false, source: feedName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK' });
+            } else if (src === 'SPOT_FALLBACK') {
+              lastServerFallbackTickRef.current = Date.now();
+              setSpotFallback({ value:Number(m.price), asOf:serverTs, ageSec:0, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
+            }
+            addTick(Number(m.price), serverTs, null, null, src);
           }
         }
         if (m.type === 'history' && Array.isArray(m.candles)) {
@@ -904,9 +927,16 @@ export default function App() {
       const officialFresh = status === 'ONLINE' &&
         lastOfficialTickRef.current > 0 &&
         (Date.now() - lastOfficialTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
+      const serverOtcFresh = status === 'ONLINE' &&
+        lastServerOtcTickRef.current > 0 &&
+        (Date.now() - lastServerOtcTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
+      const serverFallbackFresh = status === 'ONLINE' &&
+        lastServerFallbackTickRef.current > 0 &&
+        (Date.now() - lastServerFallbackTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
 
       if (weekend) {
         setSpotFallback(null);
+        if (serverOtcFresh) return;
         const q = await fetchWeekendOtcGold();
         if (!alive) return;
         setWeekendOtc(q);
