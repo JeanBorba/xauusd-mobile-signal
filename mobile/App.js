@@ -829,8 +829,9 @@ export default function App() {
         if (m.type === 'tick') {
           const tsRaw = Number(m.ts);
           const ts = finite(tsRaw) ? (tsRaw < 100000000000 ? tsRaw * 1000 : tsRaw) : Date.now();
-          lastOfficialTickRef.current = Date.now();
-          addTick(Number(m.price), ts, Number(m.source?.bid), Number(m.source?.ask), 'OFFICIAL');
+          const src = serverMarketSource(m);
+          if (src === 'OFFICIAL') lastOfficialTickRef.current = Date.now();
+          addTick(Number(m.price), ts, Number(m.source?.bid), Number(m.source?.ask), src);
         }
         if (m.type === 'market_state') {
           const md = m.dxy || m.macro?.dxy || m.market?.dxy;
@@ -852,8 +853,9 @@ export default function App() {
             });
           }
           if (finite(m.price)) {
-            lastOfficialTickRef.current = Date.now();
-            addTick(Number(m.price), finite(m.serverTime) ? Number(m.serverTime) : Date.now(), null, null, 'OFFICIAL');
+            const src = serverMarketSource(m);
+            if (src === 'OFFICIAL') lastOfficialTickRef.current = Date.now();
+            addTick(Number(m.price), finite(m.serverTime) ? Number(m.serverTime) : Date.now(), null, null, src);
           }
         }
         if (m.type === 'history' && Array.isArray(m.candles)) {
