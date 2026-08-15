@@ -1,3 +1,4 @@
+# Final post-deploy verification trigger for Server V29
 name: Validate XAUUSD Server V29
 
 on:
@@ -24,6 +25,7 @@ jobs:
           grep -q "day === 0 && minutes < 19 \* 60" server/server.js
           grep -q "xaus-spot-fallback" server/server.js
           grep -q "Sydney','Tóquio','Londres','N. York" server/server.js
+          grep -q "kraken-paxg-usd-otc-proxy" server/server.js
           echo 'Server V29 static validation: OK'
 
       - name: Validate free market sources
