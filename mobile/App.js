@@ -1,12 +1,12 @@
-/* XAUUSD MOBILE SIGNAL — V30 | VWAP + PRESSURE + ESTRUTURA OB / BOS / CHoCH */
+/* XAUUSD MOBILE SIGNAL — V31 AUDITADO | EXPO GO */
 /* ARQUIVO App.js — conteúdo pronto para colar diretamente no Snack/Expo. */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SafeAreaView, View, Text, StyleSheet, Pressable, ScrollView, StatusBar } from 'react-native';
+import { AppState, SafeAreaView, View, Text, StyleSheet, Pressable, ScrollView, StatusBar } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 /*
- XAUUSD MOBILE SIGNAL — V30 DASHBOARD
+ XAUUSD MOBILE SIGNAL — V31 DASHBOARD AUDITADO
  Base: V16/V17
  Objetivo desta versão:
  - preservar o motor de histórico persistente;
@@ -28,6 +28,12 @@ const YAHOO = 'https://query1.finance.yahoo.com';
 const HISTORY_KEY = '@xauusd_monitor/candles_5m_v30';
 const MAX_CANDLES = 500;
 const CANDLE_MS = 5 * 60 * 1000;
+const UI_REFRESH_MS = 300;
+const CLOCK_REFRESH_MS = 5000;
+const MAX_FUTURE_TICK_MS = 60 * 1000;
+const STRUCTURE_MAX_AGE_MS = 24 * CANDLE_MS;
+const WS_RECONNECT_BASE_MS = 3000;
+const WS_RECONNECT_MAX_MS = 30000;
 
 const DXY_REFRESH_MS = 60000;
 const DXY_STALE_SEC = 120;
@@ -52,7 +58,6 @@ const XAUS_SPOT_URL = 'https://xaus.com/api/v1/spot';
 const XAUS_INTRADAY_URL = 'https://xaus.com/api/v1/intraday';
 const WEEKEND_OTC_URL = XAUS_SPOT_URL;
 const OTC_REFRESH_MS = 30000;
-const OTC_HISTORY_REFRESH_MS = 120000;
 const OTC_STALE_SEC = 90;
 const OFFICIAL_STALE_SEC = 45;
 const SPOT_FALLBACK_STALE_SEC = 90;
@@ -72,6 +77,12 @@ const DXY_BASKET = [
   ['USDCHF', 'USDCHF=X',  0.036]
 ];
 const DXY_BASE = 50.14348112;
+
+const SOURCE_PRIORITY = {
+  OTC: 1,
+  SPOT_FALLBACK: 2,
+  OFFICIAL: 3
+};
 
 function finite(v) {
   return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
@@ -104,14 +115,58 @@ function normalizeCandle(c) {
   const h = num(c?.h ?? c?.high);
   const l = num(c?.l ?? c?.low);
   const close = num(c?.c ?? c?.close);
-  if (!finite(t) || ![o, h, l, close].every(finite)) return null;
+  if (!finite(t) || t > Date.now() + CANDLE_MS || ![o, h, l, close].every(finite)) return null;
+  if ([o, h, l, close].some(v => v <= 0)) return null;
+  if (h < Math.max(o, close) || l > Math.min(o, close) || h < l) return null;
+  const bucket = Math.floor(t / CANDLE_MS) * CANDLE_MS;
+  const rawVolume = num(c?.real_volume ?? c?.realVolume ?? c?.volume ?? c?.v ?? c?.tickVolume ?? c?.tick_volume);
+  const declaredVolumeType = String(c?.volumeType ?? c?.volume_type ?? '').toUpperCase();
+  const volumeType = declaredVolumeType === 'REAL' || finite(c?.real_volume) || finite(c?.realVolume)
+    ? 'REAL'
+    : declaredVolumeType === 'TICK' || finite(c?.tickVolume) || finite(c?.tick_volume)
+      ? 'TICK'
+      : declaredVolumeType === 'SYNTHETIC'
+        ? 'SYNTHETIC'
+        : 'UNKNOWN';
+  const rawSource = c?.marketSource ?? (typeof c?.source === 'string' ? c.source : c?.source?.name) ?? 'OFFICIAL';
+  const marketSource = String(rawSource).toUpperCase().includes('OTC')
+    ? 'OTC'
+    : String(rawSource).toLowerCase().includes('fallback') || String(rawSource).toLowerCase().includes('xaus.com')
+      ? 'SPOT_FALLBACK'
+      : 'OFFICIAL';
   return {
-    t: Math.floor(t / CANDLE_MS) * CANDLE_MS,
+    t: bucket,
     o, h, l, c: close,
-    volume: num(c?.volume ?? c?.v ?? c?.tickVolume ?? c?.tick_volume),
+    volume: rawVolume,
+    volumeType,
     delta: num(c?.delta),
-    marketSource: c?.marketSource || c?.source || 'OFFICIAL',
-    closed: c?.closed !== false
+    marketSource,
+    /* Sem flag explícita, somente buckets já encerrados são fechados. */
+    closed: c?.closed === false ? false : bucket + CANDLE_MS <= Date.now()
+  };
+}
+function ageSeconds(asOf, referenceTime = Date.now()) {
+  return finite(asOf) ? (referenceTime - Number(asOf)) / 1000 : Infinity;
+}
+function isFreshAsOf(asOf, maxAgeSec, allowedClockSkewSec = 5, referenceTime = Date.now()) {
+  const age = ageSeconds(asOf, referenceTime);
+  return age >= -allowedClockSkewSec && age <= maxAgeSec;
+}
+function sourcePriority(source) {
+  return SOURCE_PRIORITY[String(source || '').toUpperCase()] || 0;
+}
+function mergeSameBucket(old, incoming) {
+  const oldPriority = sourcePriority(old.marketSource);
+  const incomingPriority = sourcePriority(incoming.marketSource);
+  if (incomingPriority < oldPriority) return old;
+  if (incomingPriority > oldPriority) return incoming;
+  return {
+    ...old,
+    ...incoming,
+    volume: finite(incoming.volume) && incoming.volume >= 0 ? incoming.volume : old.volume,
+    volumeType: incoming.volumeType || old.volumeType,
+    delta: finite(incoming.delta) ? incoming.delta : old.delta,
+    closed: incoming.closed
   };
 }
 function mergeCandles(...lists) {
@@ -124,16 +179,7 @@ function mergeCandles(...lists) {
       map.set(c.t, c);
       return;
     }
-    /* Mantém o melhor registro disponível. Nunca apaga delta/volume
-       coletados pelo feed apenas porque o histórico público também
-       contém OHLC para o mesmo candle. */
-    map.set(c.t, {
-      ...old,
-      ...c,
-      volume: finite(c.volume) && c.volume > 0 ? c.volume : old.volume,
-      delta: finite(c.delta) ? c.delta : old.delta,
-      closed: old.closed !== false || c.closed !== false
-    });
+    map.set(c.t, mergeSameBucket(old, c));
   });
   return Array.from(map.values()).sort((a, b) => a.t - b.t).slice(-MAX_CANDLES);
 }
@@ -149,13 +195,7 @@ async function saveStoredCandles(candles) {
   try {
     const closed = candles.filter(c => c.closed !== false).slice(-MAX_CANDLES);
     await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(closed));
-  } catch (_) {}
-}
-async function fetchPublicXauHistory() {
-  /* O antigo XAUUSD=X do Yahoo não é uma fonte confiável/estável.
-     Para aquecer o motor sem API paga usamos a série intraday gratuita
-     da XAUS e filtramos somente os pontos de mercado normal. */
-  return await fetchXausIntraday('NORMAL');
+  } catch (_) { /* Persistência local é opcional; mantém o app operacional. */ }
 }
 function calcRSI(closes, p = 14) {
   if (!Array.isArray(closes) || closes.length < p + 1) return null;
@@ -182,7 +222,7 @@ function calcEMA(closes, p = 20) {
   return +e.toFixed(2);
 }
 function calcADX(highs, lows, closes, p = 14) {
-  if (!highs || highs.length !== lows.length || highs.length !== closes.length || highs.length < p * 2 + 1) return null;
+  if (!highs || highs.length !== lows.length || highs.length !== closes.length || highs.length < p * 2) return null;
   const tr = [], plusDM = [], minusDM = [];
   for (let i = 1; i < highs.length; i++) {
     const up = highs[i] - highs[i - 1];
@@ -228,8 +268,9 @@ function detectFVG(highs, lows, times, atr) {
       if (gap >= minGap) zones.push({ tipo: 'BAIXA', inf: highs[i + 2], sup: lows[i], tam: gap, created: times[i + 2] });
     }
   }
+  const indexByTime = new Map(times.map((t, i) => [t, i]));
   return zones.filter(z => {
-    const idx = times.indexOf(z.created);
+    const idx = indexByTime.get(z.created) ?? -1;
     if (idx < 0) return true;
     for (let j = idx + 1; j < lows.length; j++) {
       if (z.tipo === 'ALTA' && lows[j] <= z.inf) return false;
@@ -237,24 +278,6 @@ function detectFVG(highs, lows, times, atr) {
     }
     return true;
   }).slice(-10);
-}
-function detectSwingPoints(candles, left = 2, right = 2) {
-  const highs = [], lows = [];
-  if (!Array.isArray(candles) || candles.length < left + right + 3) return { highs, lows };
-  for (let i = left; i < candles.length - right; i++) {
-    let isHigh = true, isLow = true;
-    for (let j = 1; j <= left; j++) {
-      if (candles[i].h <= candles[i - j].h) isHigh = false;
-      if (candles[i].l >= candles[i - j].l) isLow = false;
-    }
-    for (let j = 1; j <= right; j++) {
-      if (candles[i].h < candles[i + j].h) isHigh = false;
-      if (candles[i].l > candles[i + j].l) isLow = false;
-    }
-    if (isHigh) highs.push({ index: i, price: candles[i].h, time: candles[i].t });
-    if (isLow) lows.push({ index: i, price: candles[i].l, time: candles[i].t });
-  }
-  return { highs, lows };
 }
 function detectStructure(candles) {
   if (!Array.isArray(candles) || candles.length < 12) {
@@ -314,8 +337,13 @@ function detectStructure(candles) {
     }
     if (!side || !swing) continue;
 
-    if (side === 'ALTA') brokenHighs.add(swing.index);
-    else brokenLows.add(swing.index);
+    /* Um candle pode atravessar vários swings. Todos os níveis cruzados são
+       marcados no mesmo evento para não produzir BOS duplicados depois. */
+    if (side === 'ALTA') {
+      confirmedHighs.forEach(x => { if (c.c > x.price) brokenHighs.add(x.index); });
+    } else {
+      confirmedLows.forEach(x => { if (c.c < x.price) brokenLows.add(x.index); });
+    }
 
     const type = trend && trend !== side ? 'CHoCH' : 'BOS';
     const event = { type, side, price: c.c, time: c.t, level: swing.price, index: i };
@@ -365,20 +393,25 @@ function detectStructure(candles) {
 }
 function calcVWAP(candles) {
   if (!Array.isArray(candles) || !candles.length) return null;
-  const now = new Date();
-  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  /* Ancora no dia UTC do último candle, e não no relógio atual. Isso mantém
+     o cálculo determinístico ao restaurar histórico ou retomar o aplicativo. */
+  const lastDate = new Date(candles[candles.length - 1].t);
+  const dayStart = Date.UTC(lastDate.getUTCFullYear(), lastDate.getUTCMonth(), lastDate.getUTCDate());
   const day = candles.filter(c => c.t >= dayStart && c.closed !== false);
   if (!day.length) return null;
-  let pv = 0, vol = 0, hasRealVolume = false;
+  const allReal = day.every(c => c.volumeType === 'REAL' && finite(c.volume) && c.volume > 0);
+  const allTick = !allReal && day.every(c =>
+    ['TICK', 'UNKNOWN'].includes(c.volumeType) && finite(c.volume) && c.volume > 0
+  );
+  let pv = 0, vol = 0;
   day.forEach(c => {
     const typical = (c.h + c.l + c.c) / 3;
-    const v = finite(c.volume) && c.volume > 0 ? c.volume : 1;
-    if (finite(c.volume) && c.volume > 0) hasRealVolume = true;
+    const v = allReal || allTick ? c.volume : 1;
     pv += typical * v;
     vol += v;
   });
   if (!vol) return null;
-  return { value: pv / vol, source: hasRealVolume ? 'VOLUME' : 'TICK/EQUAL' };
+  return { value: pv / vol, source: allReal ? 'REAL_VOLUME' : allTick ? 'TICK_VOLUME' : 'EQUAL_WEIGHT' };
 }
 
 /* Pressão é um proxy causal quando não existe fluxo bid/ask real.
@@ -387,11 +420,13 @@ function calcVWAP(candles) {
 function calcPressure(candles) {
   const r = candles.slice(-20);
   if (!r.length) return null;
-  const tickDelta = r.reduce((sum, c) => sum + (finite(c.delta) ? c.delta : 0), 0);
-  const tickCount = r.reduce((sum, c) => sum + (finite(c.delta) ? Math.abs(c.delta) : 0), 0);
-  if (tickCount > 3) {
-    if (tickDelta > 3) return { label: 'COMPRADORA', side: 'C', score: tickDelta, source: 'TICKS' };
-    if (tickDelta < -3) return { label: 'VENDEDORA', side: 'V', score: tickDelta, source: 'TICKS' };
+  const deltaCandles = r.filter(c => finite(c.delta));
+  const tickDelta = deltaCandles.reduce((sum, c) => sum + c.delta, 0);
+  const tickActivity = deltaCandles.reduce((sum, c) => sum + Math.max(1, finite(c.volume) ? c.volume : 1), 0);
+  if (deltaCandles.length >= 4 && tickActivity > 3) {
+    const normalized = tickDelta / Math.sqrt(tickActivity);
+    if (normalized > 0.35) return { label: 'COMPRADORA', side: 'C', score: normalized, source: 'TICK_DIRECTION' };
+    if (normalized < -0.35) return { label: 'VENDEDORA', side: 'V', score: normalized, source: 'TICK_DIRECTION' };
   }
   let score = 0;
   r.forEach(c => {
@@ -438,7 +473,6 @@ function sessionActive(now, session) {
   if (a>b) return m>=a || m<b;
   return m>=a && m<b;
 }
-function localClock(date,tz){ return new Intl.DateTimeFormat('pt-BR',{timeZone:tz,hour:'2-digit',minute:'2-digit',hour12:false}).format(date); }
 function sessionDisplayTimes(now,s){
   return {openLocal:s.openLocal,closeLocal:s.closeLocal,openUtc:'',closeUtc:'',offset:'BRT'};
 }
@@ -449,15 +483,6 @@ function sessionState(now, session, connectionStatus, fallbackAvailable=false) {
   if (connectionStatus === 'ONLINE') return 'ONLINE';
   if (fallbackAvailable) return 'ONLINE · FALLBACK';
   return 'SEM FEED';
-}
-async function timeoutFetch(url, ms = 8000) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const r = await fetch(url, { headers: { Accept: 'application/json' }, signal: ctrl.signal });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r;
-  } finally { clearTimeout(timer); }
 }
 async function fetchJson(url, ms = DXY_REQUEST_TIMEOUT_MS) {
   const ctrl = new AbortController();
@@ -490,26 +515,28 @@ async function yahooRate(ticker) {
 }
 
 async function calculateDxyBasket() {
-  const rows = [];
-  for (const [key, ticker, weight] of DXY_BASKET) {
-    try {
+  try {
+    const rows = await Promise.all(DXY_BASKET.map(async ([key, ticker, weight]) => {
       const q = await yahooRate(ticker);
-      rows.push({ key, value: q.value, asOf: q.asOf, weight });
-    } catch (_) {
-      return null;
-    }
+      return { key, value: q.value, asOf: q.asOf, weight };
+    }));
+    const oldest = Math.min(...rows.map(x => x.asOf));
+    const newest = Math.max(...rows.map(x => x.asOf));
+    /* Não combina cotações separadas por mais de dois candles de 5 minutos. */
+    if (newest - oldest > 2 * CANDLE_MS) return null;
+    let value = DXY_BASE;
+    rows.forEach(x => { value *= Math.pow(x.value, x.weight); });
+    if (!finite(value) || value <= 0) return null;
+    return {
+      value,
+      asOf: oldest,
+      ageSec: Math.max(0, (Date.now() - oldest) / 1000),
+      source: 'DXY CALCULADO · CESTA ICE',
+      complete: true
+    };
+  } catch (_) {
+    return null;
   }
-  let value = DXY_BASE;
-  rows.forEach(x => { value *= Math.pow(x.value, x.weight); });
-  const asOf = Math.min(...rows.map(x => x.asOf));
-  if (!finite(value) || value <= 0) return null;
-  return {
-    value,
-    asOf,
-    ageSec: Math.max(0, (Date.now() - asOf) / 1000),
-    source: 'DXY CALCULADO · CESTA ICE',
-    complete: true
-  };
 }
 
 async function fetchDirectDxy() {
@@ -521,7 +548,7 @@ async function fetchDirectDxy() {
     try {
       const q = await yahooRate(ticker);
       return { ...q, ageSec: Math.max(0, (Date.now() - q.asOf) / 1000), source, complete: false };
-    } catch (_) {}
+    } catch (_) { /* Tenta a próxima fonte DXY. */ }
   }
   return null;
 }
@@ -540,7 +567,7 @@ async function fetchServerDxy() {
         complete: d?.complete === true
       };
     }
-  } catch (_) {}
+  } catch (_) { /* O cálculo local de DXY permanece disponível como fallback. */ }
   return null;
 }
 
@@ -554,13 +581,23 @@ async function calculateDxy() {
    * Nunca transformamos XAUUSD em "DXY": sem as seis cotações FX isso
    * seria um valor inventado e contaminaria o sinal.
    */
+  const candidates = [];
+  const acceptFresh = q => q && finite(q.ageSec) && q.ageSec <= DXY_STALE_SEC;
+
   const server = await fetchServerDxy();
-  if (server) return server;
+  if (server) candidates.push(server);
+  if (acceptFresh(server)) return server;
 
   const basket = await calculateDxyBasket();
-  if (basket) return basket;
+  if (basket) candidates.push(basket);
+  if (acceptFresh(basket)) return basket;
 
-  return await fetchDirectDxy();
+  const direct = await fetchDirectDxy();
+  if (direct) candidates.push(direct);
+  if (acceptFresh(direct)) return direct;
+
+  /* Sem fonte recente, preserva apenas a menos atrasada para diagnóstico. */
+  return candidates.sort((a, b) => a.ageSec - b.ageSec)[0] || null;
 }
 
 async function fetchWeekendOtcGold() {
@@ -594,11 +631,17 @@ async function fetchXausIntraday(mode = 'NORMAL') {
     const weekendStart = otcWindowStartMs(new Date());
     const map = new Map();
 
-    points.forEach(pt => {
-      const t = normalizeTime(pt?.t ?? pt?.time ?? pt?.timestamp);
-      const p = num(pt?.p ?? pt?.price ?? pt?.c);
+    const nowMs = Date.now();
+    const orderedPoints = points.map(pt => ({
+      t: normalizeTime(pt?.t ?? pt?.time ?? pt?.timestamp),
+      p: num(pt?.p ?? pt?.price ?? pt?.c)
+    })).filter(pt => finite(pt.t) && finite(pt.p) && pt.p > 0)
+      .sort((a, b) => a.t - b.t);
+
+    orderedPoints.forEach(pt => {
+      const { t, p } = pt;
       if (!finite(t) || !finite(p) || p <= 0 || t >= currentBucket) return;
-      if (Date.now() - t > OTC_MAX_CANDLE_AGE_HOURS * 3600000) return;
+      if (nowMs - t > OTC_MAX_CANDLE_AGE_HOURS * 3600000) return;
 
       const pointIsWeekend = isStandardFxWeekend(new Date(t));
       if (pointIsWeekend !== wantWeekend) return;
@@ -608,7 +651,7 @@ async function fetchXausIntraday(mode = 'NORMAL') {
       const marketSource = wantWeekend ? 'OTC' : 'SPOT_FALLBACK';
       const old = map.get(bucket);
       if (!old) {
-        map.set(bucket, { t: bucket, o: p, h: p, l: p, c: p, volume: 1, delta: 0, closed: true, marketSource });
+        map.set(bucket, { t: bucket, o: p, h: p, l: p, c: p, volume: 1, volumeType: 'TICK', delta: 0, closed: true, marketSource });
       } else {
         const dir = p > old.c ? 1 : p < old.c ? -1 : 0;
         old.h = Math.max(old.h, p);
@@ -623,10 +666,6 @@ async function fetchXausIntraday(mode = 'NORMAL') {
   } catch(_) { return []; }
 }
 
-async function fetchWeekendOtcIntraday() {
-  return await fetchXausIntraday('OTC');
-}
-
 async function fetchNormalSpotIntraday() {
   return await fetchXausIntraday('NORMAL');
 }
@@ -634,8 +673,8 @@ async function fetchNormalSpotIntraday() {
 function serverMarketSource(m) {
   const name = String(m?.source?.name ?? m?.feed ?? m?.primary ?? '').toLowerCase();
   const mode = String(m?.marketMode ?? '').toUpperCase();
-  if (mode === 'OTC' || name.includes('xaus-otc')) return 'OTC';
-  if (name.includes('fallback') || name.includes('xaus')) return 'SPOT_FALLBACK';
+  if (mode === 'OTC' || /(^|[\s_-])otc([\s_-]|$)/.test(name) || name.includes('xauusd_otc')) return 'OTC';
+  if (mode === 'FALLBACK' || mode === 'SPOT_FALLBACK' || name.includes('fallback') || name.includes('xaus.com')) return 'SPOT_FALLBACK';
   return 'OFFICIAL';
 }
 
@@ -645,7 +684,7 @@ function colorFor(side) {
 function labelSide(side) {
   return side === 'C' ? 'ALTA' : side === 'V' ? 'BAIXA' : 'NEUTRO';
 }
-function buildSignal({ price, ema, rsi, adx, fvg, structure, pressure, dxy, vwap, sessions }) {
+function buildSignal({ price, signalTime, ema, rsi, adx, fvg, structure, pressure, dxy, vwap, referenceTime }) {
   const checks = [];
   const add = (label, side, available = true) => {
     checks.push({ label, side: available ? side : 'N', available });
@@ -657,14 +696,22 @@ function buildSignal({ price, ema, rsi, adx, fvg, structure, pressure, dxy, vwap
   add('RSI favorece direção', finite(rsi) ? (rsi > 55 && rsi < 70 ? 'C' : rsi < 45 && rsi > 30 ? 'V' : 'N') : 'N', finite(rsi));
   add('ADX +DI / -DI · força', adx && adx.adx >= 20 ? (adx.plusDI > adx.minusDI ? 'C' : adx.minusDI > adx.plusDI ? 'V' : 'N') : 'N', !!adx && adx.adx >= 20);
 
-  const near = adx && fvg?.length ? fvg.slice(-5).find(z => price >= z.inf - adx.atr * .35 && price <= z.sup + adx.atr * .35) : null;
+  const recentEnough = t => finite(t) && finite(signalTime) && signalTime - t <= STRUCTURE_MAX_AGE_MS;
+  const near = adx && finite(price) && fvg?.length
+    ? [...fvg].reverse().find(z => recentEnough(z.created) && price >= z.inf - adx.atr * .35 && price <= z.sup + adx.atr * .35)
+    : null;
+  const activeOb = structure?.ob && recentEnough(structure.ob.created) && adx && finite(price) &&
+    price >= structure.ob.inf - adx.atr * .5 && price <= structure.ob.sup + adx.atr * .5
+    ? structure.ob
+    : null;
+  const recentEvent = structure?.event && recentEnough(structure.event.time) ? structure.event : null;
   add('FVG próxima', near ? (near.tipo === 'ALTA' ? 'C' : 'V') : 'N', !!near);
-  add('OB ativo', structure?.ob ? (structure.ob.tipo === 'ALTA' ? 'C' : 'V') : 'N', !!structure?.ob);
-  add('BOS / CHoCH confirmado', structure?.event ? (structure.event.side === 'ALTA' ? 'C' : 'V') : 'N', !!structure?.event);
+  add('OB ativo e próximo', activeOb ? (activeOb.tipo === 'ALTA' ? 'C' : 'V') : 'N', !!activeOb);
+  add('BOS / CHoCH recente', recentEvent ? (recentEvent.side === 'ALTA' ? 'C' : 'V') : 'N', !!recentEvent);
   add('Delta / Pressure', pressure?.side || 'N', !!pressure && pressure.side !== 'N');
   add('Preço vs VWAP', vwap && finite(price) ? (price > vwap.value ? 'C' : price < vwap.value ? 'V' : 'N') : 'N', !!vwap && finite(price));
 
-  const dxyFresh = dxy && finite(dxy.value) && finite(dxy.asOf) && (Date.now() - dxy.asOf) / 1000 <= DXY_STALE_SEC;
+  const dxyFresh = dxy && finite(dxy.value) && isFreshAsOf(dxy.asOf, DXY_STALE_SEC, 5, referenceTime);
   add('DXY enfraquecendo/fortalecendo', dxyFresh && finite(dxy.changePct) ? (dxy.changePct < -0.05 ? 'C' : dxy.changePct > 0.05 ? 'V' : 'N') : 'N', dxyFresh && finite(dxy.changePct));
 
   const buyConfirmations = checks.filter(x => x.side === 'C').length;
@@ -673,7 +720,8 @@ function buildSignal({ price, ema, rsi, adx, fvg, structure, pressure, dxy, vwap
   const leaderSide = buyConfirmations > sellConfirmations ? 'C' : sellConfirmations > buyConfirmations ? 'V' : 'N';
   const diff = Math.abs(buyConfirmations - sellConfirmations);
   const available = checks.filter(x => x.available).length;
-  const score = available ? Math.round((leader / 9) * 100) : 0;
+  /* Confluência líquida: confirmações contrárias reduzem a pontuação. */
+  const score = available ? Math.round((diff / 9) * 100) : 0;
 
   /* Exige vantagem real e pelo menos 4 confirmações direcionais antes de
      emitir COMPRA/VENDA. Caso contrário permanece NEUTRO. */
@@ -690,7 +738,7 @@ function buildSignal({ price, ema, rsi, adx, fvg, structure, pressure, dxy, vwap
   };
 }
 
-function IndicatorRow({ label, value, side = 'N', sub = null }) {
+const IndicatorRow = React.memo(function IndicatorRow({ label, value, side = 'N', sub = null }) {
   const c = colorFor(side);
   return (
     <View style={styles.irow}>
@@ -701,8 +749,8 @@ function IndicatorRow({ label, value, side = 'N', sub = null }) {
       </View>
     </View>
   );
-}
-function SessionCard({ s, now, connectionStatus, fallbackAvailable }) {
+});
+const SessionCard = React.memo(function SessionCard({ s, now, connectionStatus, fallbackAvailable }) {
   const active = sessionActive(now, s);
   const state = sessionState(now, s, connectionStatus, fallbackAvailable);
   const times = sessionDisplayTimes(now,s);
@@ -717,18 +765,17 @@ function SessionCard({ s, now, connectionStatus, fallbackAvailable }) {
       <Text style={[styles.sessionState, { color: stateColor }]}>{state}</Text>
     </View>
   );
-}
+});
 
 export default function App() {
   const [now, setNow] = useState(new Date());
   const [status, setStatus] = useState('CONECTANDO...');
   const [weekendOtc, setWeekendOtc] = useState(null);
   const [spotFallback, setSpotFallback] = useState(null);
-  const otcRef = useRef(null);
   const lastOfficialTickRef = useRef(0);
   const lastServerOtcTickRef = useRef(0);
   const lastServerFallbackTickRef = useRef(0);
-  const currentSourceRef = useRef('OFFICIAL');
+  const lastTickBySourceRef = useRef({});
   const [price, setPrice] = useState(null);
   const [bid, setBid] = useState(null);
   const [ask, setAsk] = useState(null);
@@ -737,9 +784,13 @@ export default function App() {
   const [dxy, setDxy] = useState(null);
   const wsRef = useRef(null);
   const reconnectRef = useRef(null);
+  const reconnectAttemptRef = useRef(0);
+  const socketStoppedRef = useRef(false);
+  const appStateRef = useRef(AppState.currentState);
   const currentRef = useRef(null);
   const persistTimer = useRef(null);
-  const previousDxyRef = useRef(null);
+  const uiTimerRef = useRef(null);
+  const pendingQuoteRef = useRef(null);
   const dxyBusyRef = useRef(false);
   const lastDxyCalcRef = useRef(0);
   const otcHistoryBusyRef = useRef(false);
@@ -747,6 +798,32 @@ export default function App() {
   const persist = useCallback(list => {
     clearTimeout(persistTimer.current);
     persistTimer.current = setTimeout(() => saveStoredCandles(list), 500);
+  }, []);
+
+  const publishQuote = useCallback((p, ts, b, a, marketSource) => {
+    pendingQuoteRef.current = { p, ts, b, a, marketSource };
+    if (uiTimerRef.current) return;
+    uiTimerRef.current = setTimeout(() => {
+      uiTimerRef.current = null;
+      const q = pendingQuoteRef.current;
+      pendingQuoteRef.current = null;
+      if (!q) return;
+      setPrice(q.p);
+      if (finite(q.b)) setBid(q.b); else if (q.marketSource !== 'OFFICIAL') setBid(null);
+      if (finite(q.a)) setAsk(q.a); else if (q.marketSource !== 'OFFICIAL') setAsk(null);
+      setTickTime(new Date(q.ts).toLocaleTimeString('pt-BR'));
+    }, UI_REFRESH_MS);
+  }, []);
+
+  const acceptDxy = useCallback(q => {
+    if (!q || !finite(q.value) || !finite(q.asOf)) return;
+    if (q.asOf > Date.now() + MAX_FUTURE_TICK_MS) return;
+    setDxy(previous => {
+      if (previous?.asOf && q.asOf < previous.asOf) return previous;
+      const comparable = previous && previous.source === q.source && q.asOf > previous.asOf && previous.value > 0;
+      const changePct = comparable ? ((q.value - previous.value) / previous.value) * 100 : null;
+      return { ...q, changePct };
+    });
   }, []);
 
   useEffect(() => {
@@ -758,167 +835,253 @@ export default function App() {
       const savedClean = weekend
         ? saved.filter(c => c.marketSource === 'OTC' && c.t >= otcWindowStartMs(new Date()))
         : saved.filter(c => c.marketSource !== 'OTC');
-      const merged = mergeCandles(savedClean, publicHistory);
+      const merged = mergeCandles(savedClean, publicHistory).filter(c => c.closed !== false);
       if (mounted && merged.length) {
         setCandles(merged);
         await saveStoredCandles(merged);
       }
     })();
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => { mounted = false; clearInterval(timer); clearTimeout(persistTimer.current); };
+    const timer = setInterval(() => setNow(new Date()), CLOCK_REFRESH_MS);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+      clearTimeout(persistTimer.current);
+      clearTimeout(uiTimerRef.current);
+    };
   }, []);
 
-  const addTick = useCallback((p, ts, b, a, marketSource='OFFICIAL') => {
-    if (!finite(p) || !finite(ts)) return;
+  const addTick = useCallback((rawPrice, rawTs, b, a, rawSource='OFFICIAL') => {
+    const p = num(rawPrice);
+    const ts = normalizeTime(rawTs);
+    const marketSource = String(rawSource || 'OFFICIAL').toUpperCase();
+    if (!finite(p) || p <= 0 || !finite(ts)) return false;
+    if (ts > Date.now() + MAX_FUTURE_TICK_MS) return false;
+
     const otc = marketSource === 'OTC';
-    if (otc !== isStandardFxWeekend(new Date(ts))) return;
+    if (otc !== isStandardFxWeekend(new Date(ts))) return false;
 
-    setCandles(prev => {
-      let next = prev.filter(c => c.closed !== false);
+    const lastSourceTick = lastTickBySourceRef.current[marketSource] || 0;
+    if (ts <= lastSourceTick) return false;
 
-      /* Remove OTC apenas quando o mercado normal realmente retorna.
-         Não resetamos o candle a cada tick — isso preserva OHLC/delta. */
-      if (!otc) next = next.filter(c => c.marketSource !== 'OTC');
+    const bucket = Math.floor(ts / CANDLE_MS) * CANDLE_MS;
+    const existing = currentRef.current;
+    if (existing && bucket < existing.t) return false;
 
-      const bucket = Math.floor(ts / CANDLE_MS) * CANDLE_MS;
-      const existingCurrent = currentRef.current;
+    let completed = null;
+    let current;
+    if (!existing || bucket > existing.t || existing.marketSource !== marketSource) {
+      if (existing && bucket > existing.t) completed = { ...existing, closed: true };
+      current = {
+        t: bucket, o: p, h: p, l: p, c: p,
+        volume: 1, volumeType: 'TICK', delta: 0,
+        closed: false, marketSource
+      };
+    } else {
+      const dir = p > existing.c ? 1 : p < existing.c ? -1 : 0;
+      current = {
+        ...existing,
+        c: p,
+        h: Math.max(existing.h, p),
+        l: Math.min(existing.l, p),
+        volume: (existing.volume || 0) + 1,
+        volumeType: 'TICK',
+        delta: (existing.delta || 0) + dir
+      };
+    }
 
-      if (existingCurrent && (existingCurrent.t !== bucket || existingCurrent.marketSource !== marketSource)) {
-        next = mergeCandles(next, { ...existingCurrent, closed: true });
-        currentRef.current = null;
-      }
+    lastTickBySourceRef.current[marketSource] = ts;
+    currentRef.current = current;
 
-      let c = currentRef.current;
-      if (!c) {
-        c = { t: bucket, o: p, h: p, l: p, c: p, volume: 1, delta: 0, closed: false, marketSource };
-      } else {
-        const dir = p > c.c ? 1 : p < c.c ? -1 : 0;
-        c = {
-          ...c,
-          c: p,
-          h: Math.max(c.h, p),
-          l: Math.min(c.l, p),
-          volume: (c.volume || 0) + 1,
-          delta: (c.delta || 0) + dir,
-          marketSource
-        };
-      }
+    /* O estado React contém somente candles fechados. Com isso, indicadores,
+       estrutura e persistência são atualizados apenas uma vez a cada 5M. */
+    if (completed || (!otc && existing?.marketSource === 'OTC')) {
+      setCandles(prev => {
+        let next = prev.filter(c => c.closed !== false);
+        if (!otc) next = next.filter(c => c.marketSource !== 'OTC');
+        const out = completed ? mergeCandles(next, completed) : next;
+        persist(out);
+        return out;
+      });
+    }
 
-      currentRef.current = c;
-      currentSourceRef.current = marketSource;
-      const out = [...next, c].sort((x, y) => x.t - y.t).slice(-MAX_CANDLES);
-      persist(out);
-      return out;
-    });
-
-    setPrice(p);
-    if (finite(b)) setBid(b); else if (marketSource !== 'OFFICIAL') setBid(null);
-    if (finite(a)) setAsk(a); else if (marketSource !== 'OFFICIAL') setAsk(null);
-    setTickTime(new Date(ts).toLocaleTimeString('pt-BR'));
-  }, [persist]);
+    publishQuote(p, ts, b, a, marketSource);
+    return true;
+  }, [persist, publishQuote]);
 
   const connect = useCallback(() => {
-    if (wsRef.current) try { wsRef.current.close(); } catch (_) {}
+    clearTimeout(reconnectRef.current);
+    if (wsRef.current) {
+      const old = wsRef.current;
+      wsRef.current = null;
+      old.onopen = null;
+      old.onmessage = null;
+      old.onerror = null;
+      old.onclose = null;
+      try { old.close(); } catch (_) { /* Socket anterior já estava encerrado. */ }
+    }
+    if (socketStoppedRef.current) return;
     setStatus('CONECTANDO...');
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
     ws.onopen = () => {
+      if (socketStoppedRef.current || wsRef.current !== ws) return;
+      reconnectAttemptRef.current = 0;
       setStatus('ONLINE');
-      try { ws.send(JSON.stringify({ type: 'set_tf', tf: '5m' })); } catch (_) {}
+      try { ws.send(JSON.stringify({ type: 'set_tf', tf: '5m' })); } catch (_) { /* A reconexão tratará a falha de envio. */ }
     };
     ws.onmessage = e => {
+      if (socketStoppedRef.current || wsRef.current !== ws) return;
       try {
         const m = JSON.parse(e.data);
         if (m.type === 'tick') {
-          const tsRaw = Number(m.ts);
-          const ts = finite(tsRaw) ? (tsRaw < 100000000000 ? tsRaw * 1000 : tsRaw) : Date.now();
+          const ts = normalizeTime(m.ts);
+          const tickTs = finite(ts) ? ts : Date.now();
           const src = serverMarketSource(m);
+          const accepted = addTick(Number(m.price), tickTs, Number(m.source?.bid), Number(m.source?.ask), src);
+          if (!accepted) return;
           if (src === 'OFFICIAL') {
-            lastOfficialTickRef.current = Date.now();
+            lastOfficialTickRef.current = tickTs;
             setSpotFallback(null);
           } else if (src === 'OTC') {
-            lastServerOtcTickRef.current = Date.now();
+            lastServerOtcTickRef.current = tickTs;
             const sourceName = String(m.source?.name || 'SERVIDOR OTC');
-            setWeekendOtc({ value:Number(m.price), asOf:ts, ageSec:0, stale:false, source: sourceName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC' });
+            setWeekendOtc({ value:Number(m.price), asOf:tickTs, stale:false, source: sourceName.toLowerCase().includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC' });
           } else if (src === 'SPOT_FALLBACK') {
-            lastServerFallbackTickRef.current = Date.now();
-            setSpotFallback({ value:Number(m.price), asOf:ts, ageSec:0, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
+            lastServerFallbackTickRef.current = tickTs;
+            setSpotFallback({ value:Number(m.price), asOf:tickTs, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
           }
-          addTick(Number(m.price), ts, Number(m.source?.bid), Number(m.source?.ask), src);
         }
         if (m.type === 'market_state') {
           const md = m.dxy || m.macro?.dxy || m.market?.dxy;
           if (md && finite(md.value)) {
             const asOf = normalizeTime(md.asOf ?? md.timestamp ?? md.time ?? m.serverTime);
-            setDxy(prev => ({
-              ...prev,
+            acceptDxy({
               value: Number(md.value),
               asOf: finite(asOf) ? asOf : Date.now(),
               source: md.source || 'SERVIDOR · DXY',
-              complete: md.complete === true
-            }));
+              complete: md.complete === true,
+              ageSec: finite(asOf) ? Math.max(0, (Date.now() - asOf) / 1000) : 0
+            });
           }
           if (Array.isArray(m.candles) && m.candles.length) {
             setCandles(prev => {
-              const merged = mergeCandles(prev, m.candles);
+              const merged = mergeCandles(prev, m.candles).filter(c => c.closed !== false);
               persist(merged);
               return merged;
             });
           }
           if (finite(m.price)) {
             const src = serverMarketSource(m);
-            const serverTs = finite(m.serverTime) ? Number(m.serverTime) : Date.now();
+            const parsedServerTs = normalizeTime(m.serverTime);
+            const serverTs = finite(parsedServerTs) ? parsedServerTs : Date.now();
+            const accepted = addTick(Number(m.price), serverTs, null, null, src);
+            if (!accepted) return;
             if (src === 'OFFICIAL') {
-              lastOfficialTickRef.current = Date.now();
+              lastOfficialTickRef.current = serverTs;
               setSpotFallback(null);
             } else if (src === 'OTC') {
-              lastServerOtcTickRef.current = Date.now();
+              lastServerOtcTickRef.current = serverTs;
               const feedName = String(m.feed || 'SERVIDOR OTC');
-              setWeekendOtc({ value:Number(m.price), asOf:serverTs, ageSec:0, stale:false, source: feedName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC' });
+              setWeekendOtc({ value:Number(m.price), asOf:serverTs, stale:false, source: feedName.toLowerCase().includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC' });
             } else if (src === 'SPOT_FALLBACK') {
-              lastServerFallbackTickRef.current = Date.now();
-              setSpotFallback({ value:Number(m.price), asOf:serverTs, ageSec:0, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
+              lastServerFallbackTickRef.current = serverTs;
+              setSpotFallback({ value:Number(m.price), asOf:serverTs, stale:false, source:'XAUS · XAU/USD SPOT INDICATIVO' });
             }
-            addTick(Number(m.price), serverTs, null, null, src);
           }
         }
         if (m.type === 'history' && Array.isArray(m.candles)) {
           setCandles(prev => {
-            const merged = mergeCandles(prev, m.candles);
+            const merged = mergeCandles(prev, m.candles).filter(c => c.closed !== false);
             persist(merged);
             return merged;
           });
         }
-      } catch (_) {}
+      } catch (error) {
+        console.warn('Mensagem WSS ignorada:', error?.message || error);
+      }
     };
-    ws.onerror = () => setStatus('OFFLINE');
+    ws.onerror = () => {
+      if (wsRef.current === ws) setStatus('OFFLINE');
+    };
     ws.onclose = () => {
-      if (wsRef.current === ws) wsRef.current = null;
-      setStatus('OFFLINE');
+      if (socketStoppedRef.current || wsRef.current !== ws) return;
+      wsRef.current = null;
+      setStatus('RECONECTANDO...');
       clearTimeout(reconnectRef.current);
-      reconnectRef.current = setTimeout(connect, 3000);
+      const attempt = reconnectAttemptRef.current++;
+      const baseDelay = Math.min(WS_RECONNECT_MAX_MS, WS_RECONNECT_BASE_MS * (2 ** attempt));
+      const delay = Math.round(baseDelay * (0.85 + Math.random() * 0.3));
+      reconnectRef.current = setTimeout(() => {
+        if (!socketStoppedRef.current) connect();
+      }, delay);
     };
-  }, [addTick, persist]);
+  }, [acceptDxy, addTick, persist]);
 
   useEffect(() => {
+    socketStoppedRef.current = false;
     connect();
     return () => {
+      socketStoppedRef.current = true;
       clearTimeout(reconnectRef.current);
-      if (wsRef.current) try { wsRef.current.close(); } catch (_) {}
+      const ws = wsRef.current;
+      wsRef.current = null;
+      if (ws) {
+        ws.onopen = null;
+        ws.onmessage = null;
+        ws.onerror = null;
+        ws.onclose = null;
+        try { ws.close(); } catch (_) { /* Socket já estava encerrado. */ }
+      }
     };
+  }, [connect]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextState => {
+      const previousState = appStateRef.current;
+      appStateRef.current = nextState;
+      if (nextState === 'active' && previousState !== 'active') {
+        socketStoppedRef.current = false;
+        reconnectAttemptRef.current = 0;
+        connect();
+        return;
+      }
+      if (nextState !== 'active') {
+        socketStoppedRef.current = true;
+        clearTimeout(reconnectRef.current);
+        const ws = wsRef.current;
+        wsRef.current = null;
+        if (ws) {
+          ws.onopen = null;
+          ws.onmessage = null;
+          ws.onerror = null;
+          ws.onclose = null;
+          try { ws.close(); } catch (_) { /* Socket já estava encerrado. */ }
+        }
+        setStatus('PAUSADO');
+      }
+    });
+    return () => subscription.remove();
   }, [connect]);
 
   const closed = useMemo(() => candles.filter(c => c.closed !== false), [candles]);
   const priceNow = price ?? (closed.length ? closed[closed.length - 1].c : null);
-  const closes = closed.map(c => c.c), highs = closed.map(c => c.h), lows = closed.map(c => c.l), times = closed.map(c => c.t);
-  const rsi = useMemo(() => calcRSI(closes), [candles]);
-  const ema = useMemo(() => calcEMA(closes), [candles]);
-  const adx = useMemo(() => calcADX(highs, lows, closes), [candles]);
-  const fvg = useMemo(() => detectFVG(highs, lows, times, adx?.atr || 0), [candles, adx]);
-  const structure = useMemo(() => detectStructure(closed), [candles]);
-  const pressure = useMemo(() => calcPressure(closed), [candles]);
-  const vwap = useMemo(() => calcVWAP(closed), [candles, now.toISOString().slice(0,10)]);
+  const signalPrice = closed.length ? closed[closed.length - 1].c : null;
+  const signalTime = closed.length ? closed[closed.length - 1].t : null;
+  const series = useMemo(() => ({
+    closes: closed.map(c => c.c),
+    highs: closed.map(c => c.h),
+    lows: closed.map(c => c.l),
+    times: closed.map(c => c.t)
+  }), [closed]);
+  const rsi = useMemo(() => calcRSI(series.closes), [series]);
+  const ema = useMemo(() => calcEMA(series.closes), [series]);
+  const adx = useMemo(() => calcADX(series.highs, series.lows, series.closes), [series]);
+  const fvg = useMemo(() => detectFVG(series.highs, series.lows, series.times, adx?.atr || 0), [series, adx]);
+  const structure = useMemo(() => detectStructure(closed), [closed]);
+  const pressure = useMemo(() => calcPressure(closed), [closed]);
+  const vwap = useMemo(() => calcVWAP(closed), [closed]);
   const sessions = activeSessions(now);
+  const weekendNow = isStandardFxWeekend(now);
 
   useEffect(() => {
     let alive = true;
@@ -926,17 +1089,14 @@ export default function App() {
     const load = async () => {
       const weekend = isStandardFxWeekend(new Date());
       const officialFresh = status === 'ONLINE' &&
-        lastOfficialTickRef.current > 0 &&
-        (Date.now() - lastOfficialTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
+        isFreshAsOf(lastOfficialTickRef.current, OFFICIAL_STALE_SEC);
       const serverOtcFresh = status === 'ONLINE' &&
-        lastServerOtcTickRef.current > 0 &&
-        (Date.now() - lastServerOtcTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
+        isFreshAsOf(lastServerOtcTickRef.current, OFFICIAL_STALE_SEC);
       const serverFallbackFresh = status === 'ONLINE' &&
-        lastServerFallbackTickRef.current > 0 &&
-        (Date.now() - lastServerFallbackTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
+        isFreshAsOf(lastServerFallbackTickRef.current, OFFICIAL_STALE_SEC);
 
 if (weekend) {
-  /* V30: OTC do motor vem exclusivamente da Doto. */
+  /* V31: OTC do motor vem exclusivamente da Doto. */
   setSpotFallback(null);
   if (!serverOtcFresh && alive) setWeekendOtc(null);
   return;
@@ -964,7 +1124,7 @@ if (weekend) {
           if (alive && normalHistory.length) {
             setCandles(prev => {
               const normal = prev.filter(c => c.marketSource !== 'OTC');
-              const merged = mergeCandles(normalHistory, normal);
+              const merged = mergeCandles(normal, normalHistory).filter(c => c.closed !== false);
               persist(merged);
               return merged;
             });
@@ -980,15 +1140,15 @@ if (weekend) {
     return () => { alive = false; clearInterval(id); };
   }, [addTick, persist, status]);
 
-  const otcAge = weekendOtc?.asOf ? Math.max(0, (Date.now() - weekendOtc.asOf) / 1000) : Infinity;
-  const otcLive = !!weekendOtc && finite(weekendOtc.value) && otcAge <= OTC_STALE_SEC && !weekendOtc.stale;
+  const otcAge = ageSeconds(weekendOtc?.asOf);
+  const otcLive = !!weekendOtc && finite(weekendOtc.value) && isFreshAsOf(weekendOtc.asOf, OTC_STALE_SEC) && !weekendOtc.stale;
   const officialFeedFresh = status === 'ONLINE' &&
-    lastOfficialTickRef.current > 0 &&
-    (Date.now() - lastOfficialTickRef.current) / 1000 <= OFFICIAL_STALE_SEC;
+    isFreshAsOf(lastOfficialTickRef.current, OFFICIAL_STALE_SEC);
+  const spotFallbackAge = ageSeconds(spotFallback?.asOf);
   const spotFallbackLive = !!spotFallback && finite(spotFallback.value) &&
-    spotFallback.ageSec <= SPOT_FALLBACK_STALE_SEC && !spotFallback.stale;
-  const marketLive = isStandardFxWeekend(now) ? otcLive : (officialFeedFresh || spotFallbackLive);
-  const marketFeedLabel = isStandardFxWeekend(now)
+    isFreshAsOf(spotFallback.asOf, SPOT_FALLBACK_STALE_SEC) && !spotFallback.stale;
+  const marketLive = weekendNow ? otcLive : (officialFeedFresh || spotFallbackLive);
+  const marketFeedLabel = weekendNow
     ? (otcLive ? 'OTC · ONLINE' : 'OTC · SEM FEED')
     : officialFeedFresh ? 'FEED OFICIAL' : spotFallbackLive ? 'FALLBACK GRATUITO · XAUS' : 'SEM FEED';
 
@@ -996,25 +1156,25 @@ if (weekend) {
      imediatamente. Os candles OTC são removidos e o motor passa a aguardar
      exclusivamente o primeiro dado oficial recebido pelo WSS. */
   useEffect(() => {
-    if (isStandardFxWeekend(now)) return;
+    if (weekendNow) return;
     setCandles(prev => {
       const clean = prev.filter(c => c.marketSource !== 'OTC');
       if (clean.length !== prev.length) {
-        currentRef.current = null;
-        currentSourceRef.current = 'OFFICIAL';
+        if (currentRef.current?.marketSource === 'OTC') currentRef.current = null;
         persist(clean);
         return clean;
       }
       return prev;
     });
-  }, [now.getTime(), persist]);
+  }, [weekendNow, persist]);
 
+  const signalRefreshMs = now.getTime();
   const signal = useMemo(() => {
     if (!marketLive) {
-      return {side:'N',text:isStandardFxWeekend(now) ? 'OTC SEM FEED' : 'XAUUSD SEM FEED',score:0,checks:[],buyConfirmations:0,sellConfirmations:0,confirmations:0,available:0};
+      return {side:'N',text:weekendNow ? 'OTC SEM FEED' : 'XAUUSD SEM FEED',score:0,checks:[],buyConfirmations:0,sellConfirmations:0,confirmations:0,available:0};
     }
-    return buildSignal({ price: priceNow, ema, rsi, adx, fvg, structure, pressure, dxy, vwap, sessions });
-  }, [priceNow, ema, rsi, adx, fvg, structure, pressure, dxy, vwap, sessions, marketLive, now.getTime()]);
+    return buildSignal({ price: signalPrice, signalTime, ema, rsi, adx, fvg, structure, pressure, dxy, vwap, referenceTime: signalRefreshMs });
+  }, [signalPrice, signalTime, ema, rsi, adx, fvg, structure, pressure, dxy, vwap, marketLive, weekendNow, signalRefreshMs]);
 
   const updateDxy = useCallback(async () => {
     if (dxyBusyRef.current) return;
@@ -1024,31 +1184,22 @@ if (weekend) {
     lastDxyCalcRef.current = nowMs;
     try {
       const q = await calculateDxy();
-      if (q) setDxy(q);
+      if (q) acceptDxy(q);
     } finally {
       dxyBusyRef.current = false;
     }
-  }, []);
+  }, [acceptDxy]);
   useEffect(() => {
     updateDxy();
     const t = setInterval(updateDxy, DXY_REFRESH_MS);
     return () => clearInterval(t);
   }, [updateDxy]);
 
-  const dxyAge = dxy?.asOf ? Math.max(0, (Date.now() - dxy.asOf) / 1000) : Infinity;
+  const dxyAge = ageSeconds(dxy?.asOf);
   const dxyState = !finite(dxy?.value) || !finite(dxy?.asOf) || dxyAge > DXY_MAX_AGE_SEC ? 'SEM FEED' : dxyAge > DXY_STALE_SEC ? 'DADO ATRASADO' : 'LIVE';
-  const dxySide = dxy?.changePct == null ? 'N' : dxy.changePct < -0.05 ? 'C' : dxy.changePct > 0.05 ? 'V' : 'N';
-  const dxyText = finite(dxy?.value) ? `${dxy.value.toFixed(2)} ${dxy.changePct != null ? (dxy.changePct >= 0 ? '↑' : '↓') + ' ' + pct(dxy.changePct) : ''}` : '--';
-
-  /* A variação do DXY é calculada contra a leitura anterior recebida.
-     Na primeira leitura não se inventa uma variação: fica 0. */
-  useEffect(() => {
-    if (!dxy?.value) return;
-    const previous = previousDxyRef.current;
-    const changePct = previous && previous > 0 ? ((dxy.value - previous) / previous) * 100 : 0;
-    previousDxyRef.current = dxy.value;
-    setDxy(prev => ({ ...prev, changePct }));
-  }, [dxy?.value]);
+  const dxySide = dxyState !== 'LIVE' || dxy?.changePct == null ? 'N' : dxy.changePct < -0.05 ? 'C' : dxy.changePct > 0.05 ? 'V' : 'N';
+  const dxyArrow = dxy?.changePct > 0 ? '↑' : dxy?.changePct < 0 ? '↓' : '→';
+  const dxyText = finite(dxy?.value) ? `${dxy.value.toFixed(2)} ${dxy.changePct != null ? `${dxyArrow} ${pct(dxy.changePct)}` : ''}` : '--';
 
   const risk = !adx ? 'AGUARDANDO' : adx.atr / Math.max(priceNow || 1, 1) < 0.002 ? 'BAIXO' : adx.atr / Math.max(priceNow || 1, 1) < 0.004 ? 'NORMAL' : 'ALTO';
   const riskSide = risk === 'AGUARDANDO' ? 'N' : 'N';
@@ -1058,7 +1209,7 @@ if (weekend) {
   const bosSide = structure.event?.side === 'ALTA' ? 'C' : structure.event?.side === 'BAIXA' ? 'V' : 'N';
   const indSide = v => v == null ? 'N' : v > 50 ? 'C' : v < 50 ? 'V' : 'N';
   const adxSide = adx ? (adx.plusDI > adx.minusDI ? 'C' : adx.minusDI > adx.plusDI ? 'V' : 'N') : 'N';
-  const emaSide = priceNow != null && ema != null ? (priceNow > ema ? 'C' : priceNow < ema ? 'V' : 'N') : 'N';
+  const emaSide = signalPrice != null && ema != null ? (signalPrice > ema ? 'C' : signalPrice < ema ? 'V' : 'N') : 'N';
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -1067,24 +1218,24 @@ if (weekend) {
 
         <View style={styles.header}>
           <View style={styles.headerRow}>
-            <View style={[styles.headerDot, { backgroundColor: marketLive ? (isStandardFxWeekend(now) || spotFallbackLive && !officialFeedFresh ? '#f59e0b' : '#22c55e') : '#ef4444' }]} />
+            <View style={[styles.headerDot, { backgroundColor: marketLive ? (weekendNow || spotFallbackLive && !officialFeedFresh ? '#f59e0b' : '#22c55e') : '#ef4444' }]} />
             <Text style={styles.title}>XAUUSD MONITOR</Text>
           </View>
           <Text style={styles.connection}>{marketFeedLabel} · WSS {status} · UTC {now.toISOString().slice(11,16)}</Text>
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.cardTitle}>HORÁRIOS DAS SESSÕES · {isStandardFxWeekend(now) ? 'OTC ATIVO' : 'MERCADO NORMAL'}</Text>
+          <Text style={styles.cardTitle}>HORÁRIOS CONFIGURADOS · {weekendNow ? 'OTC ATIVO' : 'MERCADO NORMAL'}</Text>
           <View style={styles.sessionGrid}>
             {SESSIONS.map(s => <SessionCard key={s.id} s={s} now={now} connectionStatus={officialFeedFresh ? 'ONLINE' : 'OFFLINE'} fallbackAvailable={spotFallbackLive} />)}
           </View>
         </View>
 
         <View style={styles.priceCard}>
-          <Text style={styles.symbol}>{isStandardFxWeekend(now) ? 'XAUUSD OTC · TF 5M' : 'XAUUSD SPOT · TF 5M'}</Text>
+          <Text style={styles.symbol}>{weekendNow ? 'XAUUSD OTC · TF 5M' : 'XAUUSD SPOT · TF 5M'}</Text>
           <Text style={styles.price}>{priceNow == null ? '----.--' : fmt(priceNow)}</Text>
-          <Text style={[styles.live, { color: marketLive ? (isStandardFxWeekend(now) || (spotFallbackLive && !officialFeedFresh) ? '#f59e0b' : '#22c55e') : '#ef4444' }]}>
-            {isStandardFxWeekend(now)
+          <Text style={[styles.live, { color: marketLive ? (weekendNow || (spotFallbackLive && !officialFeedFresh) ? '#f59e0b' : '#22c55e') : '#ef4444' }]}>
+            {weekendNow
               ? (otcLive ? '● ONLINE · OTC' : '● OTC · SEM FEED')
               : officialFeedFresh ? '● LIVE · XAUUSD' : spotFallbackLive ? '● LIVE · XAUUSD · FALLBACK XAUS' : '● XAUUSD · SEM FEED'}
           </Text>
@@ -1092,7 +1243,7 @@ if (weekend) {
           <Text style={styles.muted}>Bid: {bid == null ? '--' : fmt(bid)}   Ask: {ask == null ? '--' : fmt(ask)}</Text>
         </View>
 
-        {isStandardFxWeekend(now) ? (
+        {weekendNow ? (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>XAUUSD OTC · ONLINE · ALIMENTA O MOTOR</Text>
             <Text style={styles.price}>{weekendOtc ? fmt(weekendOtc.value) : '----.--'}</Text>
@@ -1102,11 +1253,11 @@ if (weekend) {
           </View>
         ) : null}
 
-        {!isStandardFxWeekend(now) && !officialFeedFresh && spotFallbackLive ? (
+        {!weekendNow && !officialFeedFresh && spotFallbackLive ? (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>XAUUSD SPOT · FALLBACK GRATUITO ATIVO</Text>
             <Text style={styles.price}>{spotFallback ? fmt(spotFallback.value) : '----.--'}</Text>
-            <Text style={styles.muted}>{spotFallback ? `Fonte: ${spotFallback.source} · idade ${Math.floor(spotFallback.ageSec)}s` : 'Aguardando fallback'}</Text>
+            <Text style={styles.muted}>{spotFallback ? `Fonte: ${spotFallback.source} · idade ${Math.max(0, Math.floor(spotFallbackAge))}s` : 'Aguardando fallback'}</Text>
             <Text style={styles.historyText}>O feed oficial WSS tem prioridade. XAUS assume somente enquanto não houver tick oficial recente e é retirado automaticamente quando o feed oficial retorna.</Text>
           </View>
         ) : null}
@@ -1126,13 +1277,13 @@ if (weekend) {
             label="VWAP"
             value={vwap ? fmt(vwap.value) : 'AGUARDANDO HISTÓRICO'}
             side={vwap && priceNow != null ? (priceNow > vwap.value ? 'C' : priceNow < vwap.value ? 'V' : 'N') : 'N'}
-            sub={vwap ? (vwap.source === 'VOLUME' ? 'VOLUME · LIVE' : 'TICK/EQUAL · ESTIMADA') : 'SEM DADOS'}
+            sub={vwap ? (vwap.source === 'REAL_VOLUME' ? 'VOLUME REAL' : vwap.source === 'TICK_VOLUME' ? 'TICK VOLUME · ESTIMADA' : 'PESO IGUAL · ESTIMADA') : 'SEM DADOS'}
           />
           <IndicatorRow
             label="Delta / Pressure"
             value={pressure?.label || 'AGUARDANDO HISTÓRICO'}
             side={pressure?.side || 'N'}
-            sub={pressure ? (pressure.source === 'TICKS' ? 'TICKS · LIVE' : 'CANDLES · ESTIMADA') : 'SEM DADOS'}
+            sub={pressure ? (pressure.source === 'TICK_DIRECTION' ? 'DIREÇÃO DOS TICKS · PROXY' : 'CANDLES · ESTIMADA') : 'SEM DADOS'}
           />
         </View>
 
@@ -1159,18 +1310,18 @@ if (weekend) {
           <View style={styles.riskCard}>
             <Text style={styles.cardTitle}>RISCO · SESSÃO</Text>
             <IndicatorRow label="Risco" value={risk} side={riskSide} />
-            <IndicatorRow label="Sessões online" value={isStandardFxWeekend(now) ? (otcLive ? 'OTC ONLINE · motor ativo' : 'OTC SEM FEED') : (sessions.length ? `${sessions.length} · ${sessions.join(' / ')}` : 'NENHUMA')} side="N" />
+            <IndicatorRow label="Sessões online" value={weekendNow ? (otcLive ? 'OTC ONLINE · motor ativo' : 'OTC SEM FEED') : (sessions.length ? `${sessions.length} · ${sessions.join(' / ')}` : 'NENHUMA')} side="N" />
             <IndicatorRow label="Volatilidade" value={adx ? (adx.atr / Math.max(priceNow || 1, 1) < .003 ? 'NORMAL' : 'ALTA') : '--'} side="N" />
           </View>
         </View>
 
         <View style={styles.confCard}>
-          <Text style={styles.confText}>CONFIANÇA: <Text style={{ color: colorFor(signal.side) }}>{signal.score >= 70 ? 'ALTA' : signal.score >= 50 ? 'MÉDIA' : 'BAIXA'}</Text></Text>
+          <Text style={styles.confText}>CONFLUÊNCIA LÍQUIDA: <Text style={{ color: colorFor(signal.side) }}>{signal.score >= 70 ? 'ALTA' : signal.score >= 45 ? 'MÉDIA' : 'BAIXA'}</Text></Text>
           <View style={styles.confTrack}><View style={[styles.confFill, { width: `${Math.max(2, Math.min(100, signal.score))}%`, backgroundColor: colorFor(signal.side) }]} /></View>
           <Text style={styles.confPct}>{signal.score}%</Text>
         </View>
 
-        <Pressable style={styles.button} onPress={connect}>
+        <Pressable style={styles.button} onPress={() => { reconnectAttemptRef.current = 0; connect(); }}>
           <Text style={styles.buttonText}>RECONECTAR</Text>
         </Pressable>
         <Text style={styles.footer}>Servidor: {HEALTH_URL}</Text>
