@@ -1,95 +1,16 @@
-name: Apply App V30 Doto Real Feed
+name: Legacy V30 Upgrade V2 Disabled
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/upgrade-app-v30-doto-v2.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
+  notice:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Patch app robustly
-        shell: bash
+      - name: Explain V31 migration
         run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import re, textwrap
-          for path in [Path('App.js'),Path('mobile/App.js')]:
-              if not path.exists(): continue
-              s=path.read_text()
-              s=s.replace('XAUUSD MOBILE SIGNAL — V29','XAUUSD MOBILE SIGNAL — V30')
-              s=s.replace('@xauusd_monitor/candles_5m_v29','@xauusd_monitor/candles_5m_v30')
-              s,n=re.subn(r"function finite\(v\) \{\s*return Number\.isFinite\(Number\(v\)\);\s*\}\s*function num\(v\) \{\s*const n = Number\(v\);\s*return Number\.isFinite\(n\) \? n : null;\s*\}",textwrap.dedent('''
-              function finite(v) {
-                return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
-              }
-              function num(v) {
-                if (v === null || v === undefined || v === '') return null;
-                const n = Number(v);
-                return Number.isFinite(n) ? n : null;
-              }
-              ''').strip(),s,count=1)
-              assert n==1
-              s=s.replace("const publicHistory = weekend ? await fetchWeekendOtcIntraday() : await fetchNormalSpotIntraday();","const publicHistory = weekend ? [] : await fetchNormalSpotIntraday();",1)
-              s=s.replace("source: sourceName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK'","source: sourceName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC'",1)
-              s=s.replace("source: feedName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK'","source: feedName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC'",1)
-              load=s.index('const load = async () => {')
-              a=s.index('      if (weekend) {',load)
-              b=s.index('\n      /* Mercado normal:',a)
-              weekend=textwrap.dedent('''
-                    if (weekend) {
-                      /* V30: OTC do motor vem exclusivamente da Doto. */
-                      setSpotFallback(null);
-                      if (!serverOtcFresh && alive) setWeekendOtc(null);
-                      return;
-                    }
-              ''').strip()
-              s=s[:a]+weekend+s[b:]
-              old="const otcLive = !!weekendOtc && finite(weekendOtc.value) && weekendOtc.ageSec <= OTC_STALE_SEC && !weekendOtc.stale;"
-              assert old in s
-              s=s.replace(old,"const otcAge = weekendOtc?.asOf ? Math.max(0, (Date.now() - weekendOtc.asOf) / 1000) : Infinity;\n  const otcLive = !!weekendOtc && finite(weekendOtc.value) && otcAge <= OTC_STALE_SEC && !weekendOtc.stale;",1)
-              s=s.replace("Math.floor(weekendOtc.ageSec)","Math.floor(otcAge)")
-              s=s.replace('Aguardando cotação OTC/indicativa','Aguardando XAUUSD_OTC real da Doto')
-              oldnote='OTC/indicativo de fim de semana. O preço e os candles vêm da fonte OTC indicada acima; quando o servidor usa PAXG/USD, o painel identifica explicitamente que é um proxy 24/7. Nenhum candle é interpolado. Alimenta o motor somente enquanto o mercado oficial estiver fechado; no retorno do feed oficial, os candles OTC são descartados automaticamente.'
-              newnote='XAUUSD_OTC da Doto em tick real. Os candles 5M são formados somente com dados Doto recebidos pelo servidor. PAXG e XAUS não alimentam o motor OTC. No domingo às 19:00 BRT o OTC é encerrado automaticamente e o sistema retorna ao XAUUSD normal.'
-              assert oldnote in s
-              s=s.replace(oldnote,newnote,1)
-              path.write_text(s)
-              print('PATCHED',path)
-          PY
-
-      - name: Validate source and JSX
-        shell: bash
-        run: |
-          set -euo pipefail
-          grep -q 'V30' App.js
-          grep -q 'DOTO · XAUUSD_OTC · TICK REAL' App.js
-          grep -q 'PAXG e XAUS não alimentam o motor OTC' App.js
-          grep -q "const publicHistory = weekend ? \[\]" App.js
-          if grep -q 'KRAKEN · PAXG/USD · OTC PROXY' App.js; then echo 'Old proxy label remains' >&2; exit 1; fi
-          npm install --no-save --ignore-scripts @babel/parser@latest >/dev/null 2>&1
-          node - <<'NODE'
-          const fs=require('fs'),p=require('@babel/parser');
-          for(const f of ['App.js','mobile/App.js']) if(fs.existsSync(f)){p.parse(fs.readFileSync(f,'utf8'),{sourceType:'module',plugins:['jsx']});console.log('JSX_OK',f)}
-          NODE
-
-      - name: Publish app V30
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add App.js mobile/App.js
-          git diff --cached --quiet || (git commit -m 'V30 use real Doto XAUUSD_OTC and fix null DXY' && git push)
+          echo "::notice::Legacy V30 mutation V2 is disabled."
+          echo "V31 is maintained directly in App.js and mobile/App.js."

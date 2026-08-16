@@ -1,140 +1,16 @@
-name: Upgrade App V30 Doto Real Feed
+name: Legacy V30 Upgrade Disabled
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/upgrade-app-v30-doto.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  upgrade:
+  notice:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Patch App V30
-        shell: bash
+      - name: Explain V31 migration
         run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import textwrap
-          for path in [Path('App.js'),Path('mobile/App.js')]:
-              if not path.exists(): continue
-              s=path.read_text()
-              s=s.replace('XAUUSD MOBILE SIGNAL — V29','XAUUSD MOBILE SIGNAL — V30')
-              s=s.replace('XAUUSD MOBILE SIGNAL — V29 DASHBOARD','XAUUSD MOBILE SIGNAL — V30 DASHBOARD')
-              s=s.replace("@xauusd_monitor/candles_5m_v29","@xauusd_monitor/candles_5m_v30")
-              old="""function finite(v) {
-                return Number.isFinite(Number(v));
-              }
-              function num(v) {
-                const n = Number(v);
-                return Number.isFinite(n) ? n : null;
-              }"""
-              new="""function finite(v) {
-                return v !== null && v !== undefined && v !== '' && Number.isFinite(Number(v));
-              }
-              function num(v) {
-                if (v === null || v === undefined || v === '') return null;
-                const n = Number(v);
-                return Number.isFinite(n) ? n : null;
-              }"""
-              assert old in s
-              s=s.replace(old,new,1)
-              s=s.replace("const publicHistory = weekend ? await fetchWeekendOtcIntraday() : await fetchNormalSpotIntraday();","const publicHistory = weekend ? [] : await fetchNormalSpotIntraday();",1)
-              s=s.replace("source: sourceName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK'","source: sourceName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC'",1)
-              s=s.replace("source: feedName.includes('kraken') ? 'KRAKEN · PAXG/USD · OTC PROXY' : 'XAUS · OTC FALLBACK'","source: feedName.includes('doto') ? 'DOTO · XAUUSD_OTC · TICK REAL' : 'SERVIDOR · OTC'",1)
-              old_weekend=textwrap.dedent('''
-                    if (weekend) {
-                      setSpotFallback(null);
-                      if (serverOtcFresh) return;
-                      const q = await fetchWeekendOtcGold();
-                      if (!alive) return;
-                      setWeekendOtc(q);
-                      if (q && q.ageSec <= OTC_STALE_SEC && !q.stale) {
-                        addTick(q.value, q.asOf, null, null, 'OTC');
-                      }
-
-                      if (!otcHistoryBusyRef.current) {
-                        otcHistoryBusyRef.current = true;
-                        try {
-                          const otcHistory = await fetchWeekendOtcIntraday();
-                          if (alive && otcHistory.length) {
-                            setCandles(prev => {
-                              const clean = prev.filter(c => c.marketSource === 'OTC');
-                              const merged = mergeCandles(clean, otcHistory);
-                              persist(merged);
-                              return merged;
-                            });
-                          }
-                        } finally {
-                          otcHistoryBusyRef.current = false;
-                        }
-                      }
-                      return;
-                    }
-              ''').strip()
-              new_weekend=textwrap.dedent('''
-                    if (weekend) {
-                      /* V30: fim de semana usa exclusivamente XAUUSD_OTC real da Doto
-                         recebido pelo servidor. Não injeta XAUS/PAXG no motor. */
-                      setSpotFallback(null);
-                      if (!serverOtcFresh && alive) setWeekendOtc(null);
-                      return;
-                    }
-              ''').strip()
-              assert old_weekend in s
-              s=s.replace(old_weekend,new_weekend,1)
-              old_live="const otcLive = !!weekendOtc && finite(weekendOtc.value) && weekendOtc.ageSec <= OTC_STALE_SEC && !weekendOtc.stale;"
-              new_live="const otcAge = weekendOtc?.asOf ? Math.max(0, (Date.now() - weekendOtc.asOf) / 1000) : Infinity;\n  const otcLive = !!weekendOtc && finite(weekendOtc.value) && otcAge <= OTC_STALE_SEC && !weekendOtc.stale;"
-              assert old_live in s
-              s=s.replace(old_live,new_live,1)
-              s=s.replace("`Fonte: ${weekendOtc.source} · idade ${Math.floor(weekendOtc.ageSec)}s${weekendOtc.stale ? ' · ATRASADO' : ''}`","`Fonte: ${weekendOtc.source} · idade ${Math.floor(otcAge)}s${weekendOtc.stale ? ' · ATRASADO' : ''}`",1)
-              s=s.replace("'Aguardando cotação OTC/indicativa'","'Aguardando XAUUSD_OTC real da Doto'",1)
-              old_note="OTC/indicativo de fim de semana. O preço e os candles vêm da fonte OTC indicada acima; quando o servidor usa PAXG/USD, o painel identifica explicitamente que é um proxy 24/7. Nenhum candle é interpolado. Alimenta o motor somente enquanto o mercado oficial estiver fechado; no retorno do feed oficial, os candles OTC são descartados automaticamente."
-              new_note="XAUUSD_OTC da Doto em tick real. Os candles 5M são formados somente com ticks/candles Doto recebidos pelo servidor. PAXG e XAUS não alimentam o motor OTC. No domingo às 19:00 BRT o modo OTC é encerrado automaticamente e o sistema retorna ao XAUUSD normal."
-              assert old_note in s
-              s=s.replace(old_note,new_note,1)
-              path.write_text(s)
-              print('patched',path)
-          PY
-
-      - name: Validate V30 source and JSX
-        shell: bash
-        run: |
-          set -euo pipefail
-          grep -q 'V30' App.js
-          grep -q 'DOTO · XAUUSD_OTC · TICK REAL' App.js
-          grep -q 'PAXG e XAUS não alimentam o motor OTC' App.js
-          grep -q "const publicHistory = weekend ? \[\]" App.js
-          npm install --no-save --ignore-scripts @babel/parser@latest >/dev/null 2>&1
-          node - <<'NODE'
-          const fs=require('fs'); const parser=require('@babel/parser');
-          for(const f of ['App.js','mobile/App.js']){
-            if(!fs.existsSync(f)) continue;
-            parser.parse(fs.readFileSync(f,'utf8'),{sourceType:'module',plugins:['jsx']});
-            console.log('JSX OK',f);
-          }
-          NODE
-
-      - name: Commit V30 app
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add App.js mobile/App.js
-          if git diff --cached --quiet; then
-            echo 'App V30 already applied.'
-          else
-            git commit -m 'V30 use only real Doto XAUUSD_OTC on weekends'
-            git push
-          fi
+          echo "::notice::Legacy V30 mutation is disabled."
+          echo "V31 is maintained directly in App.js and mobile/App.js."

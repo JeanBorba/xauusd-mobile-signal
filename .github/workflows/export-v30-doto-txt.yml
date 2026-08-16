@@ -1,27 +1,39 @@
-name: Export V30 Doto App TXT
+# O nome do arquivo foi preservado por compatibilidade; este workflow exporta a V31.
+name: Export V31 Audited App TXT
 
 on:
   push:
     branches: [main]
     paths:
+      - 'App.js'
+      - 'mobile/App.js'
       - '.github/workflows/export-v30-doto-txt.yml'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   export:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify V30 and create TXT
+      - name: Verify synchronized V31 sources
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'XAUUSD MOBILE SIGNAL — V30' App.js
-          grep -q 'DOTO · XAUUSD_OTC · TICK REAL' App.js
-          cp App.js XAUUSD-Mobile-Signal-V30-DOTO-REAL.txt
-      - name: Upload V30 TXT
+          cmp -s App.js mobile/App.js
+          grep -q 'XAUUSD MOBILE SIGNAL — V31 AUDITADO' App.js
+          grep -q 'signalRefreshMs' App.js
+          grep -q "import { AppState," App.js
+          if grep -q 'XAUUSD MOBILE SIGNAL — V30' App.js; then
+            echo 'V30 marker found in App.js' >&2
+            exit 1
+          fi
+          cp App.js XAUUSD_MOBILE_SIGNAL_V31_AUDITADO.txt
+      - name: Upload V31 TXT
         uses: actions/upload-artifact@v4
         with:
-          name: XAUUSD-Mobile-Signal-V30-DOTO-REAL
-          path: XAUUSD-Mobile-Signal-V30-DOTO-REAL.txt
+          name: XAUUSD-MOBILE-SIGNAL-V31-AUDITADO
+          path: XAUUSD_MOBILE_SIGNAL_V31_AUDITADO.txt
           retention-days: 30
