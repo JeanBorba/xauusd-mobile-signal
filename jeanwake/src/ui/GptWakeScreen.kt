@@ -3,6 +3,7 @@ package com.desmond.gptwake.ui
 import android.content.Intent
 import com.desmond.gptwake.PortugueseSetupActivity
 import com.desmond.gptwake.PtBrSettings
+import com.desmond.gptwake.VoskPtBrAssets
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -153,7 +154,7 @@ private fun ScreenBody(
         SetupBanner(compact, onContinue = { onRunStep(permissions.next) })
     }
 
-    val ptSelected = PtBrSettings.isEnabled(context)
+    val ptSelected = PtBrSettings.isEnabled(context) || VoskPtBrAssets.enabled(context)
     StatusCard(ui = ui,
         phrase = if (ptSelected) "Ei, ChatGPT (pt-BR)" else selection.phrase,
         compact = compact, onToggle = onToggleService)
@@ -207,7 +208,7 @@ private fun ScreenBody(
 private fun PortugueseSetupCard() {
     val context = LocalContext.current
     val ready = PtBrSettings.isReady(context)
-    val enabled = PtBrSettings.isEnabled(context)
+    val enabled = PtBrSettings.isEnabled(context) || VoskPtBrAssets.enabled(context)
     Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Português brasileiro", style = MaterialTheme.typography.titleLarge)
@@ -215,8 +216,8 @@ private fun PortugueseSetupCard() {
                 when {
                     enabled -> "Modo pt-BR selecionado. A frase configurada é: Ei, ChatGPT."
                     ready -> "Modelos prontos; abra a configuração para ativar o reconhecimento."
-                    else -> "Para usar Ei, ChatGPT, importe a palavra-chave (.ppn), " +
-                        "o modelo português (.pv) e configure sua AccessKey Picovoice."
+                    else -> "Use a opção gratuita Vosk sem conta ou configure " +
+                        "Picovoice para uma palavra-chave personalizada."
                 },
                 style = MaterialTheme.typography.bodyMedium,
             )
