@@ -95,11 +95,13 @@ fun rememberWakeUiState(): State<WakeUiState> {
                 val controller = WakeService.controller()
                 value = WakeUiState(
                     state = controller?.state()
-                        ?: if (WakeService.isPortugueseListening())
+                        ?: if (WakeService.isPortugueseListening() ||
+                            WakeService.isVoskListening())
                             WakeController.State.KWS_LISTENING else null,
                     foreground = WakeService.isForegroundNow(),
                     micRunning = AudioProbe.isRunning()
-                        || WakeService.isPortugueseListening(),
+                        || WakeService.isPortugueseListening()
+                        || WakeService.isVoskListening(),
                     counters = controller?.counters().orEmpty(),
                     events = recentEvents(),
                     evalMode = Cfg.evalMode,
