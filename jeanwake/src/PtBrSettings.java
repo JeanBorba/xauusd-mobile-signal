@@ -143,4 +143,43 @@ public final class PtBrSettings {
             if (staging.exists()) staging.delete();
         }
     }
+
+    /** Populate private model storage from the verified, Apache-2.0 upstream asset. */
+    public static void ensureBundledPortugueseModel(Context context) throws IOException {
+        if (hasLanguage(context)) return;
+        final String expected = "21bee74582f81ce6f43d5580ee604bd358e24c71381f15d5af719c6f0beb0ed8";
+        File staging = new File(context.getFilesDir(), "pt_br_model.pv.tmp");
+        File destination = languageFile(context);
+        try (InputStream in = context.getAssets().open("picovoice/porcupine_params_pt.pv");
+             FileOutputStream out = new FileOutputStream(staging)) {
+            java.security.MessageDigest digest;
+            try {
+                digest = java.security.MessageDigest.getInstance("SHA-256");
+            } catch (java.security.NoSuchAlgorithmException e) {
+                throw new IOException("SHA-256 not available", e);
+            }
+            byte[] buffer = new byte[8192];
+            int length;
+            long total = 0;
+            while ((length = in.read(buffer)) != -1) {
+                total += length;
+                if (total > MAX_MODEL_BYTES) throw new IOException("Model size exceeded");
+                digest.update(buffer, 0, length);
+                out.write(buffer, 0, length);
+            }
+            StringBuilder hex = new StringBuilder();
+            for (byte b : digest.digest()) {
+                hex.append(String.format(java.util.Locale.ROOT, "%02x", b & 0xff));
+            }
+            if (!expected.equals(hex.toString())) throw new IOException("Model digest mismatch");
+        } finally {
+            // The temporary file is cleaned up after promotion below.
+        }
+        try {
+            if (!staging.renameTo(destination)) throw new IOException("Cannot install model");
+        } finally {
+            if (staging.exists()) staging.delete();
+        }
+    }
+
 }
