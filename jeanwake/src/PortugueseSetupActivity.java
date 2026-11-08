@@ -24,6 +24,11 @@ public final class PortugueseSetupActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        try {
+            PtBrSettings.ensureBundledPortugueseModel(this);
+        } catch (java.io.IOException error) {
+            L.e("JEANWAKE_PT_MODEL_IMPORT_FAIL", error);
+        }
         setTitle("JeanWake — Português");
         ScrollView scroll = new ScrollView(this);
         LinearLayout content = new LinearLayout(this);
