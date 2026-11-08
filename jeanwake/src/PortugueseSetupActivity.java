@@ -59,6 +59,41 @@ public final class PortugueseSetupActivity extends Activity {
             }
             refresh();
         });
+        addText(content, "Sem cadastro: usar o Vosk, com reconhecimento local e gratuito. " +
+                "É experimental e poderá consumir mais bateria.", 15);
+        addButton(content, "Ativar português sem conta (Vosk)", v -> {
+            if (WakeService.isForegroundNow()) {
+                message("Pressione Stop antes de trocar o reconhecimento");
+                return;
+            }
+            state.setText("Preparando modelo offline em português...");
+            new Thread(() -> {
+                try {
+                    VoskPtBrAssets.prepare(this);
+                    VoskPtBrAssets.setEnabled(this, true);
+                    runOnUiThread(() -> {
+                        message("Português offline selecionado. Volte e toque em Start.");
+                        refresh();
+                    });
+                } catch (Exception e) {
+                    L.e("JEANWAKE_VOSK_PREPARE_FAIL", e);
+                    runOnUiThread(() -> {
+                        message("Falha ao preparar o modelo de português");
+                        refresh();
+                    });
+                }
+            }, "vosk-ptbr-setup").start();
+        });
+        addButton(content, "Desativar português sem conta", v -> {
+            if (WakeService.isForegroundNow()) {
+                message("Pressione Stop antes de trocar o reconhecimento");
+                return;
+            }
+            VoskPtBrAssets.setEnabled(this, false);
+            message("Modo Vosk desligado");
+            refresh();
+        });
+
         addButton(content, "Importar frase Android (.ppn)", v -> pick(PICK_KEYWORD));
         addButton(content, "Importar modelo português (.pv)", v -> pick(PICK_LANGUAGE));
         addButton(content, "Abrir Picovoice Console", v -> {
@@ -114,7 +149,12 @@ public final class PortugueseSetupActivity extends Activity {
     }
 
     private void refresh() {
-        state.setText("Chave: " + (PtBrSettings.hasAccessKey(this) ? "OK" : "pendente") +
+        state.setText("Português sem conta: " +
+                (VoskPtBrAssets.enabled(this) ? "ATIVADO" : "desligado") +
+                " | Modelo offline: " +
+                (VoskPtBrAssets.isReady(this) ? "OK" : "pendente") +
+                "\nPicovoice (alternativo): chave " +
+                (PtBrSettings.hasAccessKey(this) ? "OK" : "pendente") +
                 "   |   .ppn: " + (PtBrSettings.hasKeyword(this) ? "OK" : "pendente") +
                 "   |   .pv: " + (PtBrSettings.hasLanguage(this) ? "OK" : "pendente") +
                 "\nModo português: " + (PtBrSettings.isEnabled(this) ? "ATIVO" : "desligado"));
