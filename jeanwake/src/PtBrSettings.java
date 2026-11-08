@@ -46,6 +46,7 @@ public final class PtBrSettings {
             throw new IllegalStateException("AccessKey, Android .ppn and Portuguese .pv required");
         }
         prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply();
+        if (enabled) VoskPtBrAssets.setEnabled(context, false);
     }
 
     public static File keywordFile(Context context) {
