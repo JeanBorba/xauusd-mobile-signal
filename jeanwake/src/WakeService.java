@@ -31,6 +31,10 @@ public class WakeService extends Service {
 
     private static final AtomicBoolean FOREGROUND = new AtomicBoolean(false);
     private static volatile boolean PORTUGUESE_LISTENING = false;
+    private static volatile boolean VOSK_LISTENING = false;
+    private VoskPtBrWakeDetector voskDetector;
+
+    public static boolean isVoskListening() { return VOSK_LISTENING; }
     private PtBrWakeDetector portugueseDetector;
 
     public static boolean isPortugueseListening() {
@@ -104,6 +108,16 @@ public class WakeService extends Service {
         if (intent != null && intent.getBooleanExtra(EXTRA_CYCLE, false)) {
             scheduleCycle(intent.getIntExtra(EXTRA_STOP_AFTER, 45),
                     intent.getIntExtra(EXTRA_RESUME_AFTER, 75));
+        } else if (VoskPtBrAssets.enabled(this)) {
+            // Do not start the old recognizer or Porcupine simultaneously.
+            if (voskDetector == null) {
+                bg.post(() -> {
+                    if (!startVoskDetector()) {
+                        L.i("JEANWAKE_VOSK_START_FAILED");
+                        stopSelf();
+                    }
+                });
+            }
         } else if (PtBrSettings.isEnabled(this)) {
             // Exclusively own the microphone: do not create AudioProbe/WakeController.
             if (portugueseDetector == null) {
@@ -122,12 +136,36 @@ public class WakeService extends Service {
         if (ack != null) {
             // ACK only once the capture loop is actually producing audio.
             bg.postDelayed(() -> {
-                boolean ok = AudioProbe.isRunning() || PORTUGUESE_LISTENING;
+                boolean ok = AudioProbe.isRunning() || PORTUGUESE_LISTENING || VOSK_LISTENING;
                 L.i("FGS_ACK running=" + ok + " last=" + AudioProbe.lastResult());
                 ack.send(ok ? 0 : 2, null);
-            }, 1200);
+            }, VoskPtBrAssets.enabled(this) ? 6000 : 1200);
         }
         return START_STICKY;
+    }
+
+    private boolean startVoskDetector() {
+        if (!VoskPtBrAssets.isReady(this)) {
+            L.i("JEANWAKE_VOSK_MODEL_NOT_READY");
+            return false;
+        }
+        try {
+            if (voskDetector == null) {
+                voskDetector = new VoskPtBrWakeDetector(this, this::onPortugueseWakeDetected);
+            }
+            voskDetector.start();
+            VOSK_LISTENING = true;
+            L.i("JEANWAKE_VOSK_ENGINE_READY");
+            return true;
+        } catch (Throwable error) {
+            VOSK_LISTENING = false;
+            L.e("JEANWAKE_VOSK_ENGINE_FAIL", error);
+            if (voskDetector != null) {
+                voskDetector.stop();
+                voskDetector = null;
+            }
+            return false;
+        }
     }
 
     private boolean startPortugueseDetector() {
@@ -153,10 +191,18 @@ public class WakeService extends Service {
     }
 
     private void onPortugueseWakeDetected() {
-        if (!FOREGROUND.get() || !PORTUGUESE_LISTENING || portugueseDetector == null) return;
+        if (!FOREGROUND.get()
+                || !(PORTUGUESE_LISTENING || VOSK_LISTENING)) return;
         L.i("JEANWAKE_PT_BR_WAKE_CONFIRMED");
         PORTUGUESE_LISTENING = false;
-        portugueseDetector.stop(); // release the microphone before ChatGPT can use it
+        VOSK_LISTENING = false;
+        if (portugueseDetector != null) {
+            portugueseDetector.stop();
+        }
+        if (voskDetector != null) {
+            voskDetector.stop();
+        }
+        // Release the microphone before ChatGPT can use it.
         bg.postDelayed(() -> {
             L.i("JEANWAKE_PT_BR_CHATGPT_DEEPLINK_ATTEMPT");
             boolean requested = GptLauncher.launchDeeplink(this);
@@ -167,13 +213,18 @@ public class WakeService extends Service {
     }
 
     private void resumePortuguese() {
-        if (!FOREGROUND.get() || !PtBrSettings.isEnabled(this)) return;
+        if (!FOREGROUND.get() ||
+            !(PtBrSettings.isEnabled(this) || VoskPtBrAssets.enabled(this))) return;
         if (AudioStateMonitor.isVoiceConfirmed()) {
             // Do not compete with an active voice conversation.
             bg.postDelayed(this::resumePortuguese, 8_000L);
             return;
         }
-        if (!startPortugueseDetector()) stopSelf();
+        if (VoskPtBrAssets.enabled(this)) {
+            bg.post(() -> {
+                if (!startVoskDetector()) stopSelf();
+            });
+        } else if (!startPortugueseDetector()) stopSelf();
     }
 
     private void ensureChannel() {
@@ -199,7 +250,7 @@ public class WakeService extends Service {
 
         return new NotificationCompat.Builder(this, CH)
                 .setContentTitle(getString(R.string.notification_listening))
-                .setContentText(PtBrSettings.isEnabled(this)
+                .setContentText((PtBrSettings.isEnabled(this) || VoskPtBrAssets.enabled(this))
                         ? "Ei, ChatGPT (pt-BR)" : WakeWordStore.phrase(this))
                 .setSmallIcon(R.drawable.ic_mic)
                 .setContentIntent(open)
@@ -265,6 +316,11 @@ public class WakeService extends Service {
         L.i("MIC_FGS_DESTROY");
         FOREGROUND.set(false);
         PORTUGUESE_LISTENING = false;
+        VOSK_LISTENING = false;
+        if (voskDetector != null) {
+            voskDetector.stop();
+            voskDetector = null;
+        }
         if (portugueseDetector != null) {
             portugueseDetector.stop();
             portugueseDetector = null;
