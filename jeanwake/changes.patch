@@ -1,0 +1,288 @@
+diff --git a/.gitignore b/.gitignore
+index ddaae9f..653af02 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -7,3 +7,7 @@ local.properties
+ app/build/
+ measurements/
+ .kotlin/
++
++jeanwake-build.log
++
++jeanwake-build-*.log
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index a88b39c..30c19b0 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -39,11 +39,11 @@ android {
+     compileSdk = 37
+ 
+     defaultConfig {
+-        applicationId = "com.desmond.gptwake"
++        applicationId = "br.com.jeanborba.jeanwake"
+         minSdk = 32
+         targetSdk = 36
+-        versionCode = 3
+-        versionName = "1.1.0"
++        versionCode = 4
++        versionName = "0.3.1-dev"
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+         ndk {
+             abiFilters += "arm64-v8a"
+@@ -162,3 +162,7 @@ dependencies {
+     // The Views stack (appcompat, com.google.android.material, constraintlayout) is gone along
+     // with MainActivity.java and activity_main.xml. Nothing in the app references it any more.
+ }
++
++dependencies {
++    implementation("ai.picovoice:porcupine-android:4.0.2")
++}
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 1adde1b..5cd0df2 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -2,6 +2,7 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+ 
+     <uses-permission android:name="android.permission.RECORD_AUDIO" />
++    <uses-permission android:name="android.permission.INTERNET" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+@@ -25,6 +26,11 @@
+         android:supportsRtl="true"
+         android:theme="@style/Theme.GPTWake">
+ 
++        <activity
++            android:name=".PortugueseSetupActivity"
++            android:exported="false"
++            android:label="JeanWake - Portugues" />
++
+         <activity
+             android:name=".MainActivity"
+             android:exported="true"
+diff --git a/app/src/main/java/com/desmond/gptwake/GptLauncher.java b/app/src/main/java/com/desmond/gptwake/GptLauncher.java
+index 5185302..83420f9 100644
+--- a/app/src/main/java/com/desmond/gptwake/GptLauncher.java
++++ b/app/src/main/java/com/desmond/gptwake/GptLauncher.java
+@@ -15,6 +15,7 @@ public final class GptLauncher {
+             GPT_PACKAGE, "com.openai.voice.assistant.AssistantActivity");
+ 
+     public static boolean launchDirect(Context context) {
++        LaunchDiagnostics.log(context);
+         try {
+             PackageManager pm = context.getPackageManager();
+             ActivityInfo info = pm.getActivityInfo(
+diff --git a/app/src/main/java/com/desmond/gptwake/WakeService.java b/app/src/main/java/com/desmond/gptwake/WakeService.java
+index fe395cd..4dbb06a 100644
+--- a/app/src/main/java/com/desmond/gptwake/WakeService.java
++++ b/app/src/main/java/com/desmond/gptwake/WakeService.java
+@@ -30,6 +30,13 @@ public class WakeService extends Service {
+     public static final String EXTRA_RESUME_AFTER = "resume_after";
+ 
+     private static final AtomicBoolean FOREGROUND = new AtomicBoolean(false);
++    private static volatile boolean PORTUGUESE_LISTENING = false;
++    private PtBrWakeDetector portugueseDetector;
++
++    public static boolean isPortugueseListening() {
++        return PORTUGUESE_LISTENING;
++    }
++
+     private HandlerThread ht;
+     private Handler bg;
+     private static volatile WakeController controller;
+@@ -97,6 +104,14 @@ public class WakeService extends Service {
+         if (intent != null && intent.getBooleanExtra(EXTRA_CYCLE, false)) {
+             scheduleCycle(intent.getIntExtra(EXTRA_STOP_AFTER, 45),
+                     intent.getIntExtra(EXTRA_RESUME_AFTER, 75));
++        } else if (PtBrSettings.isEnabled(this)) {
++            // Exclusively own the microphone: do not create AudioProbe/WakeController.
++            if (portugueseDetector == null) {
++                if (!startPortugueseDetector()) {
++                    stopSelf();
++                    return START_NOT_STICKY;
++                }
++            }
+         } else if (controller == null) {
+             controller = new WakeController(this);
+             controller.start();
+@@ -107,7 +122,7 @@ public class WakeService extends Service {
+         if (ack != null) {
+             // ACK only once the capture loop is actually producing audio.
+             bg.postDelayed(() -> {
+-                boolean ok = AudioProbe.isRunning();
++                boolean ok = AudioProbe.isRunning() || PORTUGUESE_LISTENING;
+                 L.i("FGS_ACK running=" + ok + " last=" + AudioProbe.lastResult());
+                 ack.send(ok ? 0 : 2, null);
+             }, 1200);
+@@ -115,6 +130,52 @@ public class WakeService extends Service {
+         return START_STICKY;
+     }
+ 
++    private boolean startPortugueseDetector() {
++        if (!PtBrSettings.isReady(this)) {
++            L.i("JEANWAKE_PT_BR_NOT_READY");
++            return false;
++        }
++        try {
++            if (portugueseDetector == null) portugueseDetector = new PtBrWakeDetector(this);
++            portugueseDetector.start(
++                    PtBrSettings.accessKey(this),
++                    PtBrSettings.keywordFile(this).getAbsolutePath(),
++                    PtBrSettings.languageFile(this).getAbsolutePath(),
++                    this::onPortugueseWakeDetected);
++            PORTUGUESE_LISTENING = true;
++            L.i("JEANWAKE_PT_BR_ENGINE_READY");
++            return true;
++        } catch (Throwable error) {
++            PORTUGUESE_LISTENING = false;
++            L.e("JEANWAKE_PT_BR_ENGINE_FAIL", error);
++            return false;
++        }
++    }
++
++    private void onPortugueseWakeDetected() {
++        if (!FOREGROUND.get() || !PORTUGUESE_LISTENING || portugueseDetector == null) return;
++        L.i("JEANWAKE_PT_BR_WAKE_CONFIRMED");
++        PORTUGUESE_LISTENING = false;
++        portugueseDetector.stop(); // release the microphone before ChatGPT can use it
++        bg.postDelayed(() -> {
++            L.i("JEANWAKE_PT_BR_CHATGPT_DEEPLINK_ATTEMPT");
++            boolean requested = GptLauncher.launchDeeplink(this);
++            L.i("JEANWAKE_PT_BR_LAUNCH_REQUESTED=" + requested
++                    + " voiceSessionNotYetConfirmed=true");
++        }, 350L);
++        bg.postDelayed(this::resumePortuguese, 15_000L);
++    }
++
++    private void resumePortuguese() {
++        if (!FOREGROUND.get() || !PtBrSettings.isEnabled(this)) return;
++        if (AudioStateMonitor.isVoiceConfirmed()) {
++            // Do not compete with an active voice conversation.
++            bg.postDelayed(this::resumePortuguese, 8_000L);
++            return;
++        }
++        if (!startPortugueseDetector()) stopSelf();
++    }
++
+     private void ensureChannel() {
+         NotificationManager nm = getSystemService(NotificationManager.class);
+         NotificationChannel ch = new NotificationChannel(
+@@ -138,7 +199,8 @@ public class WakeService extends Service {
+ 
+         return new NotificationCompat.Builder(this, CH)
+                 .setContentTitle(getString(R.string.notification_listening))
+-                .setContentText(WakeWordStore.phrase(this))
++                .setContentText(PtBrSettings.isEnabled(this)
++                        ? "Ei, ChatGPT (pt-BR)" : WakeWordStore.phrase(this))
+                 .setSmallIcon(R.drawable.ic_mic)
+                 .setContentIntent(open)
+                 .addAction(0, getString(R.string.action_stop_listening), stop)
+@@ -202,6 +264,11 @@ public class WakeService extends Service {
+     public void onDestroy() {
+         L.i("MIC_FGS_DESTROY");
+         FOREGROUND.set(false);
++        PORTUGUESE_LISTENING = false;
++        if (portugueseDetector != null) {
++            portugueseDetector.stop();
++            portugueseDetector = null;
++        }
+         WakeController c = controller;
+         controller = null;
+         if (c != null) c.stop();
+diff --git a/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt b/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt
+index 203ac7d..e85d4bc 100644
+--- a/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt
++++ b/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt
+@@ -1,5 +1,8 @@
+ package com.desmond.gptwake.ui
+ 
++import android.content.Intent
++import com.desmond.gptwake.PortugueseSetupActivity
++import com.desmond.gptwake.PtBrSettings
+ import androidx.compose.animation.animateColorAsState
+ import androidx.compose.foundation.horizontalScroll
+ import androidx.compose.foundation.layout.Arrangement
+@@ -150,9 +153,16 @@ private fun ScreenBody(
+         SetupBanner(compact, onContinue = { onRunStep(permissions.next) })
+     }
+ 
+-    StatusCard(ui = ui, phrase = selection.phrase, compact = compact, onToggle = onToggleService)
++    val ptSelected = PtBrSettings.isEnabled(context)
++    StatusCard(ui = ui,
++        phrase = if (ptSelected) "Ei, ChatGPT (pt-BR)" else selection.phrase,
++        compact = compact, onToggle = onToggleService)
++    PortugueseSetupCard()
+ 
+-    if (wide) {
++    if (ptSelected) {
++        PermissionsCard(permissions, onRunStep)
++        TestModeCard()
++    } else if (wide) {
+         // IntrinsicSize.Max fixes the row to the taller column, then the last card in each column
+         // takes the slack with weight(1f) — so both columns end on the same line.
+         Row(
+@@ -193,6 +203,32 @@ private fun ScreenBody(
+     )
+ }
+ 
++@Composable
++private fun PortugueseSetupCard() {
++    val context = LocalContext.current
++    val ready = PtBrSettings.isReady(context)
++    val enabled = PtBrSettings.isEnabled(context)
++    Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
++        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
++            Text("Português brasileiro", style = MaterialTheme.typography.titleLarge)
++            Text(
++                when {
++                    enabled -> "Modo pt-BR selecionado. A frase configurada é: Ei, ChatGPT."
++                    ready -> "Modelos prontos; abra a configuração para ativar o reconhecimento."
++                    else -> "Para usar Ei, ChatGPT, importe a palavra-chave (.ppn), " +
++                        "o modelo português (.pv) e configure sua AccessKey Picovoice."
++                },
++                style = MaterialTheme.typography.bodyMedium,
++            )
++            Button(onClick = {
++                context.startActivity(Intent(context, PortugueseSetupActivity::class.java))
++            }) {
++                Text("Configurar Ei, ChatGPT")
++            }
++        }
++    }
++}
++
+ // ---------------------------------------------------------------- status
+ 
+ @Composable
+diff --git a/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt b/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt
+index 865943c..0bbc96e 100644
+--- a/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt
++++ b/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt
+@@ -94,9 +94,12 @@ fun rememberWakeUiState(): State<WakeUiState> {
+             while (true) {
+                 val controller = WakeService.controller()
+                 value = WakeUiState(
+-                    state = controller?.state(),
++                    state = controller?.state()
++                        ?: if (WakeService.isPortugueseListening())
++                            WakeController.State.KWS_LISTENING else null,
+                     foreground = WakeService.isForegroundNow(),
+-                    micRunning = AudioProbe.isRunning(),
++                    micRunning = AudioProbe.isRunning()
++                        || WakeService.isPortugueseListening(),
+                     counters = controller?.counters().orEmpty(),
+                     events = recentEvents(),
+                     evalMode = Cfg.evalMode,
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index f7f3b77..7c27ecb 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <resources>
+-    <string name="app_name">GPTWake</string>
++    <string name="app_name">JeanWake (Dev)</string>
+     <string name="tagline">Offline wake word · opens ChatGPT voice</string>
+ 
+     <string name="status_title">Status</string>
