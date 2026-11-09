@@ -1,8 +1,8 @@
 # JeanWake — assistente de voz Android (protótipo aberto)
 
-Objetivo: permitir que o usuário diga **“Ei, ChatGPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
+Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
 
-**Estado em 08/11/2026: versão `0.4.1-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
+**Estado em 08/11/2026: versão `0.4.2-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
 
 ## O que está implementado
 
@@ -15,6 +15,19 @@ Objetivo: permitir que o usuário diga **“Ei, ChatGPT”** em português brasi
 - Opção Picovoice permanece disponível; uma AccessKey é protegida pelo Android Keystore, nunca incluída no APK.
 - Apenas **um motor** utiliza o microfone de cada vez.
 - Após detectar a frase, o aplicativo libera o microfone e tenta abrir um deep link do ChatGPT, **sem confirmação de que o modo de voz realmente abriu**.
+
+## Experimento v0.4.2 — frase curta “Ei, GPT”
+
+- Por preferência do usuário, a frase exibida e o motor experimental foram alterados para **“Ei, GPT”**.
+- O Vosk pequeno tende a transcrever a frase como `peter` ou `z peter`. O uso de gramática restrita pode reconhecer `ei z peter`, mas **também pode confundir falas comuns que mencionam GPT**. A distinção fonética **ainda não é confiável**.
+- Um comparador restrito passou em **20 testes unitários de texto** e a gramática foi testada em áudio sintético no notebook; **isso não equivale a uma validação com a voz real do usuário**.
+- Por segurança, o reconhecimento Vosk está em **modo de teste somente**: uma correspondência produz log de evento e retoma a escuta, **sem abrir automaticamente o ChatGPT**.
+- Para descobrir o que o motor entende, o usuário pode ativar o controle **“Mostrar a interpretação local”** na tela principal. A última transcrição é apresentada apenas temporariamente, por 30 segundos, em memória; **não é persistida em logs, arquivos nem publicada**. O controle começa desligado.
+- APK instalado após compilação Gradle bem-sucedida: **0.4.2-dev** (versionCode 7), SHA-256 `D422A1EE3573CBC1EADE5C396DA748A7D7A0D478AEA8C9D6A651492BE7534BC4`; GPTWake original permanece instalado.
+
+### Próximo teste
+
+Abra JeanWake (Dev), ative a escuta e, se desejar visualizar temporariamente a transcrição, habilite o diagnóstico local. Diga “Ei, GPT” em local calmo e confira se aparece a interpretação na tela e se o registro de evento aponta detecção, sem expor conversas particulares. Avaliar falsas ativações antes de habilitar abertura automática.
 
 ## Diagnóstico da versão 0.4.1-dev
 
