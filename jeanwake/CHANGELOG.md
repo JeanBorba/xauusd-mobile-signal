@@ -1,5 +1,13 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-08 — Integração automática completa COMPROVADA, tela desbloqueada
+
+- Usuário habilitou a abertura automática experimental em JeanWake 0.5.2-dev e confirmou que dizer **“Ei, GPT”** abriu a conversa por voz oficial.
+- ADB: às **22:42:31** o Vosk registrou `JEANWAKE_VOSK_PT_WAKE_DETECTED`; a intenção de voz foi enviada às **22:42:31.759**; às **22:42:36.769** a sonda registrou **`voiceConfirmed=true mode=IN_COMMUNICATION`**.
+- O aplicativo oficial utilizou o microfone por aproximadamente **29 segundos**; o detector retomou a escuta às **22:43:11**.
+- **PENDENTE:** repetir esse mesmo fluxo com a tela realmente bloqueada e confirmar a sessão de voz (não só evento do detector). Monitorar falsas ativações e bateria.
+- Sem alteração de APK, versão instalada permanece **0.5.2-dev**. Nenhuma fala de usuário foi gravada ou publicada.
+
 ## 2026-11-08 — 0.5.2-dev: deep link de voz reproduzido no Redmi Note 13
 
 - O usuário confirmou que o botão da v0.5.1 **abriu apenas o aplicativo**. O atalho oficial **Voz** do ChatGPT, por outro lado, abriu uma sessão.
