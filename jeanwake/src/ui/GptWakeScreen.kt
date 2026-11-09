@@ -4,6 +4,7 @@ import android.content.Intent
 import com.desmond.gptwake.PortugueseSetupActivity
 import com.desmond.gptwake.PtBrSettings
 import com.desmond.gptwake.VoskPtBrAssets
+import com.desmond.gptwake.VoskDebugState
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -156,9 +157,13 @@ private fun ScreenBody(
 
     val ptSelected = PtBrSettings.isEnabled(context) || VoskPtBrAssets.enabled(context)
     StatusCard(ui = ui,
-        phrase = if (ptSelected) "Ei, ChatGPT (pt-BR)" else selection.phrase,
+        phrase = if (ptSelected) "Ei, GPT (pt-BR)" else selection.phrase,
         compact = compact, onToggle = onToggleService)
     PortugueseSetupCard()
+
+    if (VoskPtBrAssets.enabled(context)) {
+        VoskDiagnosticCard(ui.debugText)
+    }
 
     if (ptSelected) {
         PermissionsCard(permissions, onRunStep)
@@ -214,7 +219,7 @@ private fun PortugueseSetupCard() {
             Text("Português brasileiro", style = MaterialTheme.typography.titleLarge)
             Text(
                 when {
-                    enabled -> "Modo pt-BR selecionado. A frase configurada é: Ei, ChatGPT."
+                    enabled -> "Modo pt-BR selecionado. A frase configurada é: Ei, GPT."
                     ready -> "Modelos prontos; abra a configuração para ativar o reconhecimento."
                     else -> "Use a opção gratuita Vosk sem conta ou configure " +
                         "Picovoice para uma palavra-chave personalizada."
@@ -224,8 +229,36 @@ private fun PortugueseSetupCard() {
             Button(onClick = {
                 context.startActivity(Intent(context, PortugueseSetupActivity::class.java))
             }) {
-                Text("Configurar Ei, ChatGPT")
+                Text("Configurar Ei, GPT")
             }
+        }
+    }
+}
+
+
+@Composable
+private fun VoskDiagnosticCard(debugText: String) {
+    var enabled by remember { mutableStateOf(VoskDebugState.enabled()) }
+    Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Teste da frase Ei, GPT", style = MaterialTheme.typography.titleLarge)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Mostrar a interpretação local",
+                     modifier = Modifier.weight(1f))
+                Switch(checked = enabled, onCheckedChange = {
+                    enabled = it
+                    VoskDebugState.setEnabled(it)
+                })
+            }
+            Text("Ao ativar, aparece somente nesta tela a última frase interpretada. " +
+                 "Ela desaparece em 30 segundos; não é gravada, enviada ou publicada.",
+                 style = MaterialTheme.typography.bodySmall)
+            if (enabled) {
+                Text(if (debugText.isBlank()) "Aguardando fala..."
+                     else "Interpretou: " + debugText)
+            }
+            Text("Modo experimental: detectar sem abrir automaticamente o ChatGPT.",
+                 style = MaterialTheme.typography.bodySmall)
         }
     }
 }
