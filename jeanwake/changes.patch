@@ -11,7 +11,7 @@ index ddaae9f..653af02 100644
 +
 +jeanwake-build-*.log
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index a88b39c..d5c3301 100644
+index a88b39c..11f798d 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -39,11 +39,11 @@ android {
@@ -24,8 +24,8 @@ index a88b39c..d5c3301 100644
          targetSdk = 36
 -        versionCode = 3
 -        versionName = "1.1.0"
-+        versionCode = 8
-+        versionName = "0.5.0-dev"
++        versionCode = 9
++        versionName = "0.5.1-dev"
          testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
          ndk {
              abiFilters += "arm64-v8a"
@@ -64,10 +64,10 @@ index 1adde1b..5cd0df2 100644
              android:name=".MainActivity"
              android:exported="true"
 diff --git a/app/src/main/java/com/desmond/gptwake/GptLauncher.java b/app/src/main/java/com/desmond/gptwake/GptLauncher.java
-index 5185302..a473b6f 100644
+index 5185302..2fa270c 100644
 --- a/app/src/main/java/com/desmond/gptwake/GptLauncher.java
 +++ b/app/src/main/java/com/desmond/gptwake/GptLauncher.java
-@@ -14,7 +14,42 @@ public final class GptLauncher {
+@@ -14,7 +14,72 @@ public final class GptLauncher {
      private static final ComponentName GPT_VOICE_COMPONENT = new ComponentName(
              GPT_PACKAGE, "com.openai.voice.assistant.AssistantActivity");
  
@@ -79,6 +79,36 @@ index 5185302..a473b6f 100644
 +     * The assistant may reject the call, display UI without voice, or be
 +     * blocked by keyguard/background-activity rules.
 +     */
++
++    /**
++     * Launches ChatGPT exactly as its regular launcher icon does.
++     * Users may enable ChatGPT > Settings > Voice > Start with Voice.
++     * An accepted startActivity is NOT proof of a voice conversation.
++     */
++    public static boolean launchChatGptMain(Context context) {
++        try {
++            PackageManager pm = context.getPackageManager();
++            Intent launch = pm.getLaunchIntentForPackage(GPT_PACKAGE);
++            if (launch == null || launch.getComponent() == null) {
++                L.i("JEANWAKE_CHATGPT_MAIN_MISSING");
++                return false;
++            }
++            ActivityInfo info = pm.getActivityInfo(launch.getComponent(), 0);
++            if (!info.exported || !GPT_PACKAGE.equals(info.packageName)) {
++                L.i("JEANWAKE_CHATGPT_MAIN_NOT_EXPORTED");
++                return false;
++            }
++            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++            L.i("JEANWAKE_CHATGPT_MAIN_REQUEST target=" + info.name);
++            context.startActivity(launch);
++            L.i("JEANWAKE_CHATGPT_MAIN_INTENT_SENT voiceSessionNotYetConfirmed=true");
++            return true;
++        } catch (Throwable t) {
++            L.e("JEANWAKE_CHATGPT_MAIN_REQUEST_FAIL", t);
++            return false;
++        }
++    }
++
 +    public static boolean launchPublicAssist(Context context) {
 +        try {
 +            Intent intent = new Intent(Intent.ACTION_ASSIST)
@@ -110,7 +140,7 @@ index 5185302..a473b6f 100644
          try {
              PackageManager pm = context.getPackageManager();
              ActivityInfo info = pm.getActivityInfo(
-@@ -49,6 +84,6 @@ public final class GptLauncher {
+@@ -49,6 +114,6 @@ public final class GptLauncher {
      }
  
      public static boolean launch(Context context) {
@@ -119,7 +149,7 @@ index 5185302..a473b6f 100644
      }
  }
 diff --git a/app/src/main/java/com/desmond/gptwake/WakeService.java b/app/src/main/java/com/desmond/gptwake/WakeService.java
-index fe395cd..180fd7e 100644
+index fe395cd..e343a62 100644
 --- a/app/src/main/java/com/desmond/gptwake/WakeService.java
 +++ b/app/src/main/java/com/desmond/gptwake/WakeService.java
 @@ -30,6 +30,17 @@ public class WakeService extends Service {
@@ -248,9 +278,9 @@ index fe395cd..180fd7e 100644
 +        // The capture loop above has released the microphone. Use the public
 +        // Android ACTION_ASSIST handler for ChatGPT, not a private activity.
 +        bg.postDelayed(() -> {
-+            L.i("JEANWAKE_CHATGPT_ASSIST_ATTEMPT");
-+            boolean requested = GptLauncher.launchPublicAssist(this);
-+            L.i("JEANWAKE_CHATGPT_ASSIST_REQUESTED=" + requested
++            L.i("JEANWAKE_CHATGPT_MAIN_ATTEMPT");
++            boolean requested = GptLauncher.launchChatGptMain(this);
++            L.i("JEANWAKE_CHATGPT_MAIN_REQUESTED=" + requested
 +                    + " voiceSessionNotYetConfirmed=true");
 +            bg.postDelayed(() ->
 +                L.i("JEANWAKE_CHATGPT_VOICE_PROBE voiceConfirmed="
