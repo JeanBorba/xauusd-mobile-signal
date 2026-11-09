@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JeanWake Assistant Lab</string>
+    <string name="assistant_service_name">JeanWake Assistant experimental</string>
+</resources>
