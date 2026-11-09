@@ -17,6 +17,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * and might fail to transcribe "ChatGPT" reliably. Keep a visible Stop control.
  */
 public final class VoskPtBrWakeDetector implements RecognitionListener {
+    private static final String EI_GPT_GRAMMAR =
+            "[\"ei peter\", \"ei z peter\", \"ei de peter\", "
+            + "\"ei gente peter\", \"[unk]\"]";
     private final Context context;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable onWake;
@@ -39,7 +42,7 @@ public final class VoskPtBrWakeDetector implements RecognitionListener {
         }
         try {
             model = new Model(VoskPtBrAssets.modelDir(context).getAbsolutePath());
-            recognizer = new Recognizer(model, 16000.0f);
+            recognizer = new Recognizer(model, 16000.0f, EI_GPT_GRAMMAR);
             service = new SpeechService(recognizer, 16000.0f);
             triggered.set(false);
             if (!service.startListening(this)) throw new IOException("Vosk recorder did not start");
@@ -57,6 +60,7 @@ public final class VoskPtBrWakeDetector implements RecognitionListener {
         if (!active || triggered.get() || json == null) return;
         try {
             String hypothesis = new JSONObject(json).optString(field, "");
+            if (!hypothesis.isBlank()) VoskDebugState.accept(hypothesis);
             if (!hypothesis.isBlank()) {
                 // Only coarse activity metadata; do not log recognized user speech.
                 long now = android.os.SystemClock.elapsedRealtime();
