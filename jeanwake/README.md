@@ -1,5 +1,7 @@
 # JeanWake — assistente de voz Android (protótipo aberto)
 
+**Marco confirmado em 08/11/2026:** o usuário ativou a abertura automática experimental, disse **“Ei, GPT”** com a tela desbloqueada e iniciou a conversa oficial do ChatGPT. O ADB confirmou wake às **22:42:31**, sessão de voz `voiceConfirmed=true` às **22:42:36** e ~29 segundos de gravação pelo microfone do ChatGPT. **A abertura automática com tela bloqueada ainda não foi testada nesta versão.**
+
 Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
 
 **Estado em 08/11/2026: versão `0.5.2-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
