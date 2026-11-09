@@ -22,6 +22,36 @@ public final class GptLauncher {
      * The assistant may reject the call, display UI without voice, or be
      * blocked by keyguard/background-activity rules.
      */
+
+    /**
+     * Launches ChatGPT exactly as its regular launcher icon does.
+     * Users may enable ChatGPT > Settings > Voice > Start with Voice.
+     * An accepted startActivity is NOT proof of a voice conversation.
+     */
+    public static boolean launchChatGptMain(Context context) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            Intent launch = pm.getLaunchIntentForPackage(GPT_PACKAGE);
+            if (launch == null || launch.getComponent() == null) {
+                L.i("JEANWAKE_CHATGPT_MAIN_MISSING");
+                return false;
+            }
+            ActivityInfo info = pm.getActivityInfo(launch.getComponent(), 0);
+            if (!info.exported || !GPT_PACKAGE.equals(info.packageName)) {
+                L.i("JEANWAKE_CHATGPT_MAIN_NOT_EXPORTED");
+                return false;
+            }
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            L.i("JEANWAKE_CHATGPT_MAIN_REQUEST target=" + info.name);
+            context.startActivity(launch);
+            L.i("JEANWAKE_CHATGPT_MAIN_INTENT_SENT voiceSessionNotYetConfirmed=true");
+            return true;
+        } catch (Throwable t) {
+            L.e("JEANWAKE_CHATGPT_MAIN_REQUEST_FAIL", t);
+            return false;
+        }
+    }
+
     public static boolean launchPublicAssist(Context context) {
         try {
             Intent intent = new Intent(Intent.ACTION_ASSIST)
