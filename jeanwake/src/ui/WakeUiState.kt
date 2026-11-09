@@ -16,6 +16,7 @@ import com.desmond.gptwake.Cfg
 import com.desmond.gptwake.L
 import com.desmond.gptwake.WakeController
 import com.desmond.gptwake.WakeService
+import com.desmond.gptwake.VoskDebugState
 import kotlinx.coroutines.delay
 
 /**
@@ -33,6 +34,7 @@ data class WakeUiState(
     val counters: String,
     val events: List<String>,
     val evalMode: Boolean = false,
+    val debugText: String = "",
 )
 
 /** Which setup step is still outstanding. Ordered; the banner offers the first unsatisfied one. */
@@ -105,6 +107,7 @@ fun rememberWakeUiState(): State<WakeUiState> {
                     counters = controller?.counters().orEmpty(),
                     events = recentEvents(),
                     evalMode = Cfg.evalMode,
+                    debugText = VoskDebugState.latest(),
                 )
                 delay(700)
             }
