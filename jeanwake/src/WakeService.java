@@ -202,6 +202,13 @@ public class WakeService extends Service {
         if (voskDetector != null) {
             voskDetector.stop();
         }
+        if (VoskPtBrAssets.enabled(this)) {
+            // The shortened phrase can be confused with ordinary speech.
+            // Test detection first; never start the ChatGPT app automatically yet.
+            L.i("JEANWAKE_VOSK_WAKE_TEST_ONLY_NO_LAUNCH");
+            bg.postDelayed(this::resumePortuguese, 3_000L);
+            return;
+        }
         // Release the microphone before ChatGPT can use it.
         bg.postDelayed(() -> {
             L.i("JEANWAKE_PT_BR_CHATGPT_DEEPLINK_ATTEMPT");
@@ -251,7 +258,7 @@ public class WakeService extends Service {
         return new NotificationCompat.Builder(this, CH)
                 .setContentTitle(getString(R.string.notification_listening))
                 .setContentText((PtBrSettings.isEnabled(this) || VoskPtBrAssets.enabled(this))
-                        ? "Ei, ChatGPT (pt-BR)" : WakeWordStore.phrase(this))
+                        ? "Ei, GPT (pt-BR)" : WakeWordStore.phrase(this))
                 .setSmallIcon(R.drawable.ic_mic)
                 .setContentIntent(open)
                 .addAction(0, getString(R.string.action_stop_listening), stop)
