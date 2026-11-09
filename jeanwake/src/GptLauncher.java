@@ -28,6 +28,43 @@ public final class GptLauncher {
      * Users may enable ChatGPT > Settings > Voice > Start with Voice.
      * An accepted startActivity is NOT proof of a voice conversation.
      */
+
+    /**
+     * Experimental public deep link with launcher provenance.
+     * Validated on Redmi Note 13 / ChatGPT Android via ADB:
+     * ChatGPT started VoiceModeForegroundService and live RECORD_AUDIO.
+     * URL and intent extras may change with ChatGPT app updates.
+     */
+    public static boolean launchChatGptVoice(Context context) {
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW,
+                    Uri.parse("https://chat.com/?mode=voice"))
+                    .setPackage(GPT_PACKAGE)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            intent.putExtra(
+                    "com.openai.feature.shortcut.impl.ShortcutInitializer.EXTRA_SHORTCUT",
+                    "launcher_shortcut");
+            android.content.pm.ResolveInfo target =
+                    context.getPackageManager().resolveActivity(intent,
+                            PackageManager.MATCH_DEFAULT_ONLY);
+            if (target == null || target.activityInfo == null
+                    || !target.activityInfo.exported
+                    || !GPT_PACKAGE.equals(target.activityInfo.packageName)) {
+                L.i("JEANWAKE_VOICE_LINK_NO_PUBLIC_HANDLER");
+                return false;
+            }
+            L.i("JEANWAKE_VOICE_LINK_REQUEST target=" + target.activityInfo.name);
+            context.startActivity(intent);
+            // This verifies dispatch only, not the existence of a Voice session.
+            L.i("JEANWAKE_VOICE_LINK_INTENT_SENT voiceSessionNotYetConfirmed=true");
+            return true;
+        } catch (Throwable error) {
+            L.e("JEANWAKE_VOICE_LINK_REQUEST_FAIL", error);
+            return false;
+        }
+    }
+
     public static boolean launchChatGptMain(Context context) {
         try {
             PackageManager pm = context.getPackageManager();
@@ -114,6 +151,6 @@ public final class GptLauncher {
     }
 
     public static boolean launch(Context context) {
-        return launchPublicAssist(context) || launchDeeplink(context);
+        return launchChatGptVoice(context) || launchChatGptMain(context);
     }
 }
