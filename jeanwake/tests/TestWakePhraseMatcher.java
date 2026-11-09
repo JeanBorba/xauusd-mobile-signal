@@ -1,35 +1,41 @@
 package com.desmond.gptwake;
 
 public class TestWakePhraseMatcher {
-    private static int failures;
-
+    private static int failures = 0;
+    private static int checks = 0;
     private static void check(String phrase, boolean expected) {
+        checks++;
         boolean actual = WakePhraseMatcher.matches(phrase);
         if (actual != expected) {
             failures++;
             System.err.println("FAIL expected=" + expected + " phrase=" + phrase);
         }
     }
-
     public static void main(String[] args) {
-        check("chat z peter", true);
-        check("charge z peter", true);
-        check("oi chat z peter", true);
-        check("chat de peter", true);
-        check("Ei, ChatGPT!", true);
-        check("ei chat g p t", true);
-        check("chát gê pê tê", true);
-        check("oi chat vamos conversar", false);
-        check("oi pessoal", false);
-        check("chat", false);
+        check("Ei, GPT!", true);
+        check("ei gpt", true);
+        check("ei z peter", true);
+        check("[unk] ei z peter", true);
+        check("ei de peter", true);
+        check("ei gente peter", true);
+        check("ei peter", true);
+        check("Ei G P T", true);
+        check("ei piter", true);
+        check("ei pete", true);
         check("peter", false);
-        check("chat peter", false);
-        check("o debate do peter no chat", false);
-        check("oi, quero falar com o chat", false);
+        check("z peter", false);
+        check("oi gente peter", false);
+        check("oi chat gpt", false);
+        check("ei, chat gpt", false);
+        check("gpt", false);
+        check("eu gostei do gpt", false);
+        check("vamos falar com o peter", false);
+        check("ei gente", false);
+        check("ei, tudo bem?", false);
         if (failures != 0) {
-            System.err.println("FAILED: " + failures);
+            System.err.println("TEST_FAILURES: " + failures + " of " + checks);
             System.exit(1);
         }
-        System.out.println("WAKE_MATCHER_TESTS_PASSED: 14");
+        System.out.println("WAKE_MATCHER_TESTS_PASSED: " + checks);
     }
 }
