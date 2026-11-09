@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<voice-interaction-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="br.com.jeanborba.assistantlab.JeanWakeVoiceSessionService"
+    android:recognitionService="br.com.jeanborba.assistantlab.LabRecognitionService"
+    android:settingsActivity="br.com.jeanborba.assistantlab.MainActivity"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true"
+    android:supportsLocalInteraction="true" />
