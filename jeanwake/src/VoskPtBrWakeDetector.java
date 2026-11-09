@@ -8,9 +8,7 @@ import org.vosk.Model;
 import org.vosk.Recognizer;
 import org.vosk.android.RecognitionListener;
 import org.vosk.android.SpeechService;
-import java.text.Normalizer;
 import java.io.IOException;
-import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -27,6 +25,7 @@ public final class VoskPtBrWakeDetector implements RecognitionListener {
     private Recognizer recognizer;
     private SpeechService service;
     private volatile boolean active;
+    private volatile long lastSpeechDiagnosticMs;
 
     public VoskPtBrWakeDetector(Context ctx, Runnable onWake) {
         this.context = ctx.getApplicationContext();
@@ -54,27 +53,19 @@ public final class VoskPtBrWakeDetector implements RecognitionListener {
         }
     }
 
-    private static String normalize(String input) {
-        return Normalizer.normalize(input, Normalizer.Form.NFD)
-                .replaceAll("\\p{M}+", "").toLowerCase(Locale.ROOT).trim();
-    }
-
-    public static boolean matches(String hypothesis) {
-        String s = normalize(hypothesis).replaceAll("[^a-z0-9\\s]", " ");
-        s = s.replaceAll("\\s+", " ");
-        // Require both a greeting and an invocation with distinguishable GPT letters.
-        boolean greeting = s.matches(".*\\b(ei|hey|ola|e ai)\\b.*");
-        boolean assistant = s.matches(".*\\b(chat|tchat|tchet|chete)\\b.*");
-        boolean gpt = s.matches(".*\\b(gpt|g p t|g pe te|ge pe te|g p te|gp t)\\b.*");
-        return greeting && assistant && gpt;
-    }
-
     private void handle(String json, String field) {
         if (!active || triggered.get() || json == null) return;
         try {
             String hypothesis = new JSONObject(json).optString(field, "");
-            if (matches(hypothesis) && triggered.compareAndSet(false, true)) {
-                // Never log text of the user's speech.
+            if (!hypothesis.isBlank()) {
+                // Only coarse activity metadata; do not log recognized user speech.
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (now - lastSpeechDiagnosticMs > 20_000L) {
+                    lastSpeechDiagnosticMs = now;
+                    L.i("JEANWAKE_VOSK_SPEECH_RECEIVED field=" + field);
+                }
+            }
+            if (WakePhraseMatcher.matches(hypothesis) && triggered.compareAndSet(false, true)) {
                 L.i("JEANWAKE_VOSK_PT_WAKE_DETECTED");
                 main.post(onWake);
             }
