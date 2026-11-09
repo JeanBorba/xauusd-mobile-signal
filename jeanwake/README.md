@@ -2,7 +2,7 @@
 
 Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
 
-**Estado em 08/11/2026: versão `0.5.1-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
+**Estado em 08/11/2026: versão `0.5.2-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
 
 ## O que está implementado
 
@@ -15,6 +15,26 @@ Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileir
 - Opção Picovoice permanece disponível; uma AccessKey é protegida pelo Android Keystore, nunca incluída no APK.
 - Apenas **um motor** utiliza o microfone de cada vez.
 - Após detectar a frase, o aplicativo libera o microfone e tenta abrir um deep link do ChatGPT, **sem confirmação de que o modo de voz realmente abriu**.
+
+## Experimento v0.5.2 — link de voz validado com microfone ativo
+
+O usuário confirmou que o botão da v0.5.1 **abria apenas o ChatGPT**, sem iniciar a conversa, apesar de o atalho oficial **Voz** funcionar. Em seguida foi feito um teste ADB no mesmo Redmi Note 13:
+
+```sh
+adb shell am start -W -a android.intent.action.VIEW \
+  -d 'https://chat.com/?mode=voice' -p com.openai.chatgpt \
+  --es 'com.openai.feature.shortcut.impl.ShortcutInitializer.EXTRA_SHORTCUT' 'launcher_shortcut'
+```
+
+**Resultado verificado:** `Status: ok`; atividade pública do ChatGPT iniciada; `VoiceModeForegroundService` apareceu em `dumpsys activity services`; `RECORD_AUDIO: allow ... (running)` confirmado. Ao contrário do teste `ACTION_ASSIST`, **o serviço de voz e seu microfone efetivamente iniciaram**. Isso ainda não demonstra o resultado quando o comando parte do serviço JeanWake com o telefone bloqueado.
+
+- Novo método `GptLauncher.launchChatGptVoice()` usa apenas `ACTION_VIEW` pública, URL de voz acima, pacote `com.openai.chatgpt`, identificação de origem `launcher_shortcut`, validação de handler exportado e registro da solicitação separado de confirmação de voz.
+- Novo botão manual **“Testar VOZ do ChatGPT (novo)”** em **Configurar Ei, GPT**, permitido somente com o serviço JeanWake parado (Stop). Os botões anteriores permanecem apenas como alternativas de diagnóstico.
+- Quando o usuário habilita explicitamente a abertura automática experimental, a detecção de `Ei, GPT` libera o microfone Vosk e tenta abrir a voz por essa rota. **O opt-in anterior não migra automaticamente para v0.5.2**: o recurso começa desligado por segurança. Persistem riscos de falsos positivos e restrições do Android 15 para abrir atividades de segundo plano com a tela bloqueada.
+- **Compilação e instalação:** Gradle `BUILD SUCCESSFUL` e Android `install -r` **Success**, versão instalada `0.5.2-dev`, versionCode `10`, SHA-256 do APK debug `3778B04C024882B1E5D49CD258507C735834FFAD0DF89FD156973F5BC345DB25`.
+- O aplicativo oficial do ChatGPT e o GPTWake original não foram modificados. A análise local do APK oficial para interoperabilidade **não é publicada**, apenas os arquivos-fonte originais do JeanWake.
+
+**Próximo teste:** JeanWake `Stop` → `Configurar Ei, GPT` → `Testar VOZ do ChatGPT (novo)`. O usuário deve relatar se começa uma conversa de voz. Confirmando, poderemos testar separadamente o acionamento por fala com a tela desbloqueada e só depois com a tela bloqueada, monitorando falsas ativações. **Não habilitar abertura automática antes do primeiro teste.**
 
 ## Experimento v0.5.1 — Start with Voice e abertura normal
 
