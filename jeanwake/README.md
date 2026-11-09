@@ -1,55 +1,42 @@
-# JeanWake — assistente por voz para Android
+# JeanWake — assistente de voz Android (protótipo aberto)
 
-Aplicativo experimental para o **Redmi Note 13 (HyperOS 2, Android 15)**, visando a palavra de ativação em português **"Ei, ChatGPT"** com tela bloqueada.
+Objetivo: permitir que o usuário diga **“Ei, ChatGPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
 
-**Estado em 08/11/2026:** **JeanWake 0.3.1-dev compilado e instalado** no aparelho via ADB (`br.com.jeanborba.jeanwake`, versão 4). A escuta com tela apagada foi comprovada antes, na versão 0.2.0-dev. **O modo português ainda não foi validado em operação** porque precisa da AccessKey e de um modelo personalizado Android `.ppn`; a abertura automática da sessão de voz do ChatGPT continua sem confirmação.
+**Estado em 08/11/2026: versão `0.4.0-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
 
-## Implementado
+## O que está implementado
 
-- Serviço em primeiro plano para a captura de áudio, herdado do [GPTWake](https://github.com/suddenBook/GPTWake), preservando sua licença.
-- Mecanismo **alternativo** de palavra-chave português com **Porcupine Android 4.0.2**, com escolha entre este e o reconhecedor antigo, **nunca simultâneos**.
-- Tela dedicada para configurar português, selecionar `.ppn` e salvar uma **AccessKey Picovoice protegida pelo Android Keystore**. Não publicar a chave.
-- Modelo público pt `porcupine_params_pt.pv` incluído no APK, verificado por SHA-256 contra o arquivo de origem oficial. O modelo é copiado para armazenamento privado ao abrir a configuração.
-- Após detectar uma palavra em português, o código libera o microfone e **tenta** abrir o ChatGPT por deep link; é uma tentativa, **não uma abertura comprovada da conversa por voz**.
-- Interface com acesso à configuração pt-BR e indicação do modo selecionado.
-- Primeiro APK 0.3.1-dev assinado para depuração, compilado com sucesso e instalado no aparelho (assinatura debug). SHA-256 do APK local: `9AA56EFC34C982AC9542DB0EAE020CF104488E807D8D126E1B83052BE37543`.
+- Aplicativo separado do GPTWake original, identificador Android `br.com.jeanborba.jeanwake`.
+- Serviço de captura de microfone foreground, com botão **Stop** e funcionamento em tela bloqueada comprovado anteriormente com o mecanismo original.
+- Dois motores opcionais para português: **Vosk offline pt-BR** (sem conta) e **Porcupine** (requer AccessKey e modelo personalizado).
+- Modelo **Vosk small Portuguese 0.3** oficial, licenciado sob Apache-2.0, 31 MB compactados, incluído no APK; extrai aproximadamente 53 MB em armazenamento privado do app ao ativar. SHA-256 do ZIP: `6e1ce909032e1afa7a88e68a3d628ecafff302bdf195befab308826c395e93b7`.
+- Bibliotecas Android Vosk `0.3.75` e JNA `5.18.1`.
+- Reconhecimento Vosk configurado para tratar a frase como **transcrição contínua**. Pode ser menos confiável e gastar mais bateria que um detector exclusivo de palavra-chave. O texto ouvido **não é gravado em logs**.
+- Opção Picovoice permanece disponível; uma AccessKey é protegida pelo Android Keystore, nunca incluída no APK.
+- Apenas **um motor** utiliza o microfone de cada vez.
+- Após detectar a frase, o aplicativo libera o microfone e tenta abrir um deep link do ChatGPT, **sem confirmação de que o modo de voz realmente abriu**.
 
-## O que ainda falta
+## Status e próximos testes
 
-1. Obter uma AccessKey na conta do usuário em [Picovoice Console](https://console.picovoice.ai/), sem enviá-la pelo chat.
-2. Criar e baixar um **modelo Android em português** da palavra "Ei, ChatGPT" em formato `.ppn` e importá-lo pelo JeanWake.
-3. Validar que o motor Porcupine consegue capturar o microfone e reconhecer essa frase no aparelho com a tela apagada e sem USB.
-4. Validar integração de voz: a `AssistantActivity` interna do ChatGPT **não é exportada** no teste; deep link não tem garantia de iniciar a sessão. Avaliar alternativa de assistente próprio via API autorizada, com custos diferentes da assinatura do ChatGPT.
-5. Medir consumo de bateria e estabilizar o serviço antes da distribuição.
+1. Abra **JeanWake (Dev) → Configurar Ei, ChatGPT → Ativar português sem conta (Vosk)**. Esse primeiro preparo extrai o modelo local e pode demorar alguns instantes.
+2. Quando a interface indicar **Português sem conta: ATIVADO**, volte à tela principal e toque em **Start**.
+3. Diga **“Ei, ChatGPT”** e observe se o aplicativo detectou a fala. Testar primeiro desbloqueado e depois bloqueado.
+4. Examinar ADB para `JEANWAKE_VOSK_ENGINE_READY`, `JEANWAKE_VOSK_PT_WAKE_DETECTED` e falhas de captura, sem divulgar transcrições de áudio.
+5. Medir bateria, falsos positivos e falhas de reinício. Interromper com **Stop** após testes.
+6. Resolver a integração com uma sessão de voz oficial ou projetar assistente independente via API oficial com cobrança e credenciais próprias.
 
-## Código-fonte reproduzível
+**Ainda não é uma versão final de uso diário.** Não exigir root, desabilitar proteções do Android ou publicar senhas/chaves.
 
-O código-base é o commit GPTWake `2e31652be39b1751a6a75eac3027716b7d5286b1`. Os módulos abaixo são novos e o arquivo de diferenças aplica sobre esse commit:
+## Fonte e reprodução
 
-- [Patch Git](changes.patch) — verificado com `git apply --check` contra o código-base
-- [PtBrSettings.java](src/PtBrSettings.java)
-- [PortugueseSetupActivity.java](src/PortugueseSetupActivity.java)
-- [PtBrWakeDetector.java](src/PtBrWakeDetector.java)
-- [LaunchDiagnostics.java](src/LaunchDiagnostics.java)
-- [CHANGELOG](CHANGELOG.md)
+Código original baseado no [GPTWake](https://github.com/suddenBook/GPTWake) commit `2e31652be39b1751a6a75eac3027716b7d5286b1`. O [patch](changes.patch) deste repositório passou em `git apply --check` contra essa base; classes adicionais em [src/](src/) devem ser copiadas para `app/src/main/java/com/desmond/gptwake/` nas respectivas pastas.
 
-Para reproduzir:
+O ZIP público do modelo offline pode ser obtido de [Vosk oficial](https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip) e copiado para `app/src/main/assets/vosk/vosk-model-small-pt-0.3.zip` antes do build. O modelo pt-BR Picovoice `.pv` é obtido de [seu upstream](https://github.com/Picovoice/porcupine/tree/master/lib/common).
 
-```bash
-git clone https://github.com/suddenBook/GPTWake.git JeanWake-source
-cd JeanWake-source
-git checkout 2e31652be39b1751a6a75eac3027716b7d5286b1
-curl -fL -o jeanwake-changes.patch https://raw.githubusercontent.com/JeanBorba/xauusd-mobile-signal/jeanwake-development/jeanwake/changes.patch
-git apply --check jeanwake-changes.patch
-git apply jeanwake-changes.patch
-mkdir -p app/src/main/assets/picovoice
-curl -fL -o app/src/main/assets/picovoice/porcupine_params_pt.pv https://raw.githubusercontent.com/Picovoice/porcupine/master/lib/common/porcupine_params_pt.pv
-```
+Use **JDK 21, Gradle 9.6.1 e Android SDK 37**, e execute `gradle :app:assembleDebug`. Os fontes foram publicados; o APK permanece no notebook do proprietário, não é uma release de produção.
 
-Copie as quatro classes Java indicadas acima de `jeanwake/src/` para `app/src/main/java/com/desmond/gptwake/`. Verifique o SHA-256 do modelo: `21bee74582f81ce6f43d5580ee604bd358e24c71381f15d5af719c6f0beb0ed8`. Compile com **Java 21**, **Gradle 9.6.1** e **Android SDK 37**, executando `gradle :app:assembleDebug`. Nunca embuta AccessKey pessoal ou modelos privados em APK público.
+## Privacidade e licença
 
-## Licença, privacidade e segurança
+GPTWake e Vosk são distribuídos sob Apache-2.0, respeitando avisos e atribuição ao código-base; o Picovoice possui termos próprios. O reconhecimento offline Vosk não precisa enviar áudio a servidor. Não publicar credenciais, dados de log pessoais ou arquivos privados.
 
-O código derivado do GPTWake permanece sujeito à sua [licença Apache 2.0](LICENSE) e atribuição ao projeto original. O SDK e os modelos Picovoice podem ter termos adicionais de uso/acesso. Modelos privados e chaves não são publicados. Não há root, desbloqueio de bootloader, gravação remota ou contorno de permissões Android.
-
-Acompanhe o progresso na [issue #3](https://github.com/JeanBorba/xauusd-mobile-signal/issues/3). Os arquivos desta pasta são um *patch* reproduzível e módulos novos, **não uma release pronta para usuários finais**.
+[Histórico](CHANGELOG.md) · [Desenvolvimento / issue #3](https://github.com/JeanBorba/xauusd-mobile-signal/issues/3).
