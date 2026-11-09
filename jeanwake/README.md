@@ -2,7 +2,7 @@
 
 Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
 
-**Estado em 08/11/2026: versão `0.5.0-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
+**Estado em 08/11/2026: versão `0.5.1-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
 
 ## O que está implementado
 
@@ -15,6 +15,19 @@ Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileir
 - Opção Picovoice permanece disponível; uma AccessKey é protegida pelo Android Keystore, nunca incluída no APK.
 - Apenas **um motor** utiliza o microfone de cada vez.
 - Após detectar a frase, o aplicativo libera o microfone e tenta abrir um deep link do ChatGPT, **sem confirmação de que o modo de voz realmente abriu**.
+
+## Experimento v0.5.1 — Start with Voice e abertura normal
+
+- O usuário confirmou que o atalho **Voz** do menu de pressão longa no ícone oficial do ChatGPT **iniciou uma conversa de voz no Redmi Note 13**.
+- Os registros ADB desse acionamento mostram `ChatGptDeeplinkActivity` e depois `MainActivity`; a consulta de atalhos confirma `id=Voice` e o rótulo **Voz**.
+- O método `LauncherApps.startShortcut` **não é acessível diretamente ao JeanWake**, porque `hasShortcutHostPermission` é `false` (essa permissão é reservada ao launcher padrão ou serviço de voz ativo); não alterar o launcher ou o assistente padrão.
+- Segundo a [documentação oficial do ChatGPT](https://help.openai.com/en/articles/20001274-chatgpt-voice), no app móvel compatível o usuário pode habilitar **Settings > Voice > Start with Voice**, para que abrir uma conversa nova ou vazia inicie automaticamente o modo de voz. **Essa configuração ainda não foi verificada neste aparelho.**
+- Implementado `GptLauncher.launchChatGptMain()`, que abre o ChatGPT por sua entrada pública **MainActivity** com validação de exportação. O botão **“Testar abrir ChatGPT normalmente”** na configuração só funciona se o JeanWake estiver parado (Stop).
+- Se o usuário optou expressamente pela abertura automática experimental, o serviço pode solicitar a abertura normal após detectar `Ei, GPT` e liberar o microfone; opção **desligada por padrão** por falsos positivos. `startActivity` aceito **não equivale a sessão de voz iniciada**, especialmente com a tela bloqueada.
+- A rota `ACTION_ASSIST` anterior foi mantida apenas para diagnóstico: três acionamentos manuais iniciaram brevemente `AssistantProxyActivity` e encerraram sem conversa.
+- **Compilação e instalação verificadas:** APK `0.5.1-dev` versionCode `9`, SHA-256 `15CA96EBCF09B09F95F3DC5757E4A53502F5C27EAAD5AFA18C69D932E5DBDD22`; Gradle `BUILD SUCCESSFUL`, ADB `install -r` retornou `Success`. GPTWake original preservado.
+
+**Próxima validação:** usuário verifica/ativa **Iniciar com voz**, se disponível, encerra o serviço JeanWake, toca em **Configurar Ei, GPT > Testar abrir ChatGPT normalmente** e relata se abre a voz, apenas o app ou nada. Não ativar autoabertura antes do resultado.
 
 ## Experimento v0.5.0 — rota pública do assistente
 
