@@ -2,7 +2,7 @@
 
 Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
 
-**Estado em 08/11/2026: versão `0.4.2-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
+**Estado em 08/11/2026: versão `0.5.0-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
 
 ## O que está implementado
 
@@ -15,6 +15,16 @@ Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileir
 - Opção Picovoice permanece disponível; uma AccessKey é protegida pelo Android Keystore, nunca incluída no APK.
 - Apenas **um motor** utiliza o microfone de cada vez.
 - Após detectar a frase, o aplicativo libera o microfone e tenta abrir um deep link do ChatGPT, **sem confirmação de que o modo de voz realmente abriu**.
+
+## Experimento v0.5.0 — rota pública do assistente
+
+- No Redmi Note 13, `android.intent.action.ASSIST` restrita ao pacote `com.openai.chatgpt` resolve para a atividade pública `AssistantProxyActivity`. Isso evita tentar abrir a atividade interna não exportada.
+- Novo método `GptLauncher.launchPublicAssist()` com validação de destino exportado e logs que distinguem **pedido aceito** de **sessão de voz confirmada**.
+- Nova tela de configuração com botão **“Testar abertura do assistente ChatGPT”** (requer que o serviço de escuta esteja parado), e configuração separada **“Ativar abertura automática (experimental)”**, **desligada por padrão** porque a frase curta tem falsos positivos.
+- Após detecção, se o usuário optou pela abertura experimental, o serviço libera o microfone, envia o comando `ACTION_ASSIST`, inspeciona o modo de áudio e tenta retomar a escuta apenas depois.
+- **Primeiro teste controlado do comando público via ADB**: a atividade `AssistantProxyActivity` aceitou `am start` (`Status: ok`), porém não observamos ativação do microfone do ChatGPT ou uma conversa iniciada; isso **não confirma o funcionamento do assistente**. Uma tentativa de simular a tecla Back pelo ADB foi recusada pelo Android (permissão `INJECT_EVENTS`); o teste não deixou o microfone do ChatGPT ativo.
+- Compilação `BUILD SUCCESSFUL`; APK debug `0.5.0-dev`, versionCode 8, SHA-256 `DA4F837A574DC4E0832E8E0ED3A2CC274338F1EB75F939945AD9F43147F2C0AC`, `adb install -r` retornou `Success`. O GPTWake original permanece instalado.
+- **Pendente:** executar o botão do próprio aplicativo (em vez do ADB) para conferir se o Android permite iniciar a conversa, e testar com tela bloqueada apenas após confirmar.
 
 ## Experimento v0.4.2 — frase curta “Ei, GPT”
 
