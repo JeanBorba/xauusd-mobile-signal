@@ -37,7 +37,7 @@ public final class PortugueseSetupActivity extends Activity {
         content.setPadding(pad, pad, pad, pad);
         scroll.addView(content);
 
-        addText(content, "Ativação: Ei, ChatGPT", 22);
+        addText(content, "Ativação: Ei, GPT", 22);
         addText(content,
                 "Configuração experimental. É necessária uma AccessKey do Picovoice, " +
                 "um arquivo .ppn criado para Android e um modelo de português .pv. " +
