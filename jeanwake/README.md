@@ -1,5 +1,7 @@
 # JeanWake — assistente de voz Android (protótipo aberto)
 
+**Teste bloqueado em 08/11/2026: falhou na etapa Android, não no reconhecimento.** Com `mWakefulness=Dozing` e keyguard ativo, o JeanWake reconheceu “Ei, GPT” às 22:44:22, 22:46:36 e 22:47:04 e enviou a abertura da voz. As três tentativas tiveram `voiceConfirmed=false`. O Android mostrou `BAL_ALLOW_SAW_PERMISSION`, porém também `Abort background activity starts` e `result code=102` (`START_ABORTED`). Isso significa que a permissão de sobreposição foi aceita, **mas a atividade de voz foi abortada pelo sistema**. O APK 0.5.2-dev **não abre a conversa de voz com tela bloqueada** nas condições testadas. Não usar `startActivity` sem exceção como evidência de abertura. Recomendação durante o diagnóstico: usar **Stop** e desabilitar abertura automática fora dos testes devido a falsas ativações possíveis.
+
 **Marco confirmado em 08/11/2026:** o usuário ativou a abertura automática experimental, disse **“Ei, GPT”** com a tela desbloqueada e iniciou a conversa oficial do ChatGPT. O ADB confirmou wake às **22:42:31**, sessão de voz `voiceConfirmed=true` às **22:42:36** e ~29 segundos de gravação pelo microfone do ChatGPT. **A abertura automática com tela bloqueada ainda não foi testada nesta versão.**
 
 Objetivo: permitir que o usuário diga **“Ei, GPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
