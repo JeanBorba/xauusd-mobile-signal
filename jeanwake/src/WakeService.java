@@ -202,19 +202,26 @@ public class WakeService extends Service {
         if (voskDetector != null) {
             voskDetector.stop();
         }
-        if (VoskPtBrAssets.enabled(this)) {
-            // The shortened phrase can be confused with ordinary speech.
-            // Test detection first; never start the ChatGPT app automatically yet.
+        if (VoskPtBrAssets.enabled(this) && !AssistLaunchOptions.autoLaunch(this)) {
+            // Short "Ei, GPT" has observed false positives on synthetic speech.
+            // Default remains test-only until user explicitly opts into auto launch.
             L.i("JEANWAKE_VOSK_WAKE_TEST_ONLY_NO_LAUNCH");
             bg.postDelayed(this::resumePortuguese, 3_000L);
             return;
         }
-        // Release the microphone before ChatGPT can use it.
+
+        // The capture loop above has released the microphone. Use the public
+        // Android ACTION_ASSIST handler for ChatGPT, not a private activity.
         bg.postDelayed(() -> {
-            L.i("JEANWAKE_PT_BR_CHATGPT_DEEPLINK_ATTEMPT");
-            boolean requested = GptLauncher.launchDeeplink(this);
-            L.i("JEANWAKE_PT_BR_LAUNCH_REQUESTED=" + requested
+            L.i("JEANWAKE_CHATGPT_ASSIST_ATTEMPT");
+            boolean requested = GptLauncher.launchPublicAssist(this);
+            L.i("JEANWAKE_CHATGPT_ASSIST_REQUESTED=" + requested
                     + " voiceSessionNotYetConfirmed=true");
+            bg.postDelayed(() ->
+                L.i("JEANWAKE_CHATGPT_VOICE_PROBE voiceConfirmed="
+                    + AudioStateMonitor.isVoiceConfirmed()
+                    + " mode=" + AudioStateMonitor.modeName(AudioStateMonitor.mode())),
+                5_000L);
         }, 350L);
         bg.postDelayed(this::resumePortuguese, 15_000L);
     }
