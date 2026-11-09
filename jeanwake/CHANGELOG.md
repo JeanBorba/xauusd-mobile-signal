@@ -1,5 +1,16 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-08 — v0.4.1-dev (correção de transcrição e diagnóstico)
+
+- Após o teste real do usuário, o ADB mostrou serviço Vosk em foreground e microfone ativo, mas **nenhum evento de reconhecimento de palavra de ativação** até 21:05 (hora local). O aplicativo não tentou abrir o ChatGPT.
+- Diagnóstico reproduzido no notebook com voz sintética pt-BR de `Microsoft Maria Desktop`: o Vosk reconheceu `Ei, ChatGPT!` como `chat z peter`; outras amostras produziram `charge z peter`, `oi chat z peter` e `chat de peter`. **Este resultado não é uma transcrição da voz do usuário.**
+- O comparador antigo exigia `ei`, `chat` e `gpt` explicitamente, descartando essas saídas do modelo pequeno.
+- Novo comparador `WakePhraseMatcher.java` aceita essas variantes específicas, mas rejeita falas comuns como `oi chat vamos conversar`; **14 testes locais passaram**.
+- Diagnóstico agora registra apenas um marcador temporal de atividade de fala, sem guardar texto reconhecido, gravação ou transcrição do usuário.
+- Gradle: **BUILD SUCCESSFUL**. SHA-256 do APK debug: `58025D955C2E953F89843D8A8F41B1978CC03C9D033603E3FFC495D1ED519209`.
+- Atualização ADB: **Success**, pacote Android confirmado como `0.4.1-dev` (`versionCode=6`), preservando o GPTWake original.
+- **Pendente:** testar novamente com a voz real do usuário e verificar `JEANWAKE_VOSK_PT_WAKE_DETECTED`; o deep link que tenta iniciar a conversa do ChatGPT continua sem garantia de funcionar com tela bloqueada.
+
 ## 2026-11-08 — v0.4.0-dev (Vosk pt-BR sem conta)
 
 - Identificada exigência de e-mail corporativo no cadastro Picovoice do usuário; alternativa sem cadastro criada.
