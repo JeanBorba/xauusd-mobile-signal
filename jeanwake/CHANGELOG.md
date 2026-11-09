@@ -1,5 +1,17 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-08 — 0.4.2-dev: frase curta “Ei, GPT” em modo de teste
+
+- Usuário pediu a frase de ativação **“Ei, GPT”** no lugar de “Ei, ChatGPT”.
+- Teste no notebook com fala sintetizada pt-BR: o Vosk transcreve “Ei, GPT” como `peter` ou `z peter`; a gramática restrita produziu `[unk] ei z peter` em exemplos positivos. Um exemplo negativo (“Eu gostei do GPT”) também foi reconhecido como `ei z peter`, revelando **risco real de falsos positivos**.
+- Implementado vocabulário restrito no Vosk e `WakePhraseMatcher.java` atualizado; **20 testes unitários de correspondência passaram**. Isso não comprova reconhecimento confiável com a voz do usuário.
+- Implementado `VoskDebugState.java` e cartão de diagnóstico local *opt-in*; texto reconhecido só é exibido em memória por 30 segundos e não é registrado em logcat nem publicado.
+- **Modo experimental seguro:** uma detecção do Vosk produz apenas evento e reinicia a escuta; **a abertura automática do ChatGPT está desabilitada** até avaliar acertos e falsos positivos.
+- Gradle: `BUILD SUCCESSFUL`; APK SHA-256 `D422A1EE3573CBC1EADE5C396DA748A7D7A0D478AEA8C9D6A651492BE7534BC4`; Android versionCode `7`.
+- ADB `install -r` retornou `Success`, versão instalada confirmada como `0.4.2-dev`; GPTWake original preservado.
+- Publicados fontes atualizados, patch reproduzível e testes na branch `jeanwake-development`.
+- **Pendente:** teste com voz real e bloqueio de tela, verificação de falsos positivos e confirmação de integração com voz oficial do ChatGPT.
+
 ## 2026-11-08 — v0.4.1-dev (correção de transcrição e diagnóstico)
 
 - Após o teste real do usuário, o ADB mostrou serviço Vosk em foreground e microfone ativo, mas **nenhum evento de reconhecimento de palavra de ativação** até 21:05 (hora local). O aplicativo não tentou abrir o ChatGPT.
