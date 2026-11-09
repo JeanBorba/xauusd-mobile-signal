@@ -1,5 +1,17 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-08 — 0.5.2-dev: deep link de voz reproduzido no Redmi Note 13
+
+- O usuário confirmou que o botão da v0.5.1 **abriu apenas o aplicativo**. O atalho oficial **Voz** do ChatGPT, por outro lado, abriu uma sessão.
+- Investigado o pacote oficial localmente para obter os parâmetros relevantes de inicialização, sem modificar nem publicar o APK proprietário.
+- Teste via ADB: `ACTION_VIEW https://chat.com/?mode=voice`, pacote `com.openai.chatgpt`, extra `com.openai.feature.shortcut.impl.ShortcutInitializer.EXTRA_SHORTCUT=launcher_shortcut` retornou `Status: ok` e iniciou `VoiceModeForegroundService` com `RECORD_AUDIO: allow (running)`.
+- Implementado `GptLauncher.launchChatGptVoice()` por intent pública, validando handler exportado e distinguindo solicitação de início real da voz.
+- Adicionado botão **Testar VOZ do ChatGPT (novo)** ao JeanWake, exigindo `Stop` no serviço de microfone.
+- O fluxo automático experimental opcional agora chama a rota de voz após liberar o microfone. A preferência anterior não é reaproveitada: **autolançamento segue desligado**, com opt-in exigido novamente nesta versão, devido aos falsos positivos do detector curto.
+- Android Gradle: **BUILD SUCCESSFUL**; APK SHA-256 `3778B04C024882B1E5D49CD258507C735834FFAD0DF89FD156973F5BC345DB25`.
+- ADB `install -r`: **Success**; Android confirmou `versionName=0.5.2-dev`, `versionCode=10`; GPTWake original preservado.
+- **Pendente:** validação do botão **dentro do JeanWake**, depois teste de frase curta no Android desbloqueado e com tela bloqueada. O teste ADB foi com tela acesa e não comprova lançamento por serviço em segundo plano, nem imunidade a falsos positivos.
+
 ## 2026-11-08 — 0.5.1-dev: botão de abertura normal do ChatGPT
 
 - O usuário confirmou que o atalho oficial **Voz**, acessado por pressão longa no ícone do ChatGPT, abriu uma conversa de voz no Redmi Note 13.
