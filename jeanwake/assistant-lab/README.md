@@ -27,3 +27,15 @@ Objetivo: comprovar, sem root nem troca silenciosa de assistente, se um `VoiceIn
 `VoiceInteractionService` facilita a integração do assistente selecionado, mas **não oferece acesso garantido à sessão de voz privada do ChatGPT**. Também não disponibiliza automaticamente o hardware de hotword OEM. A compatibilidade final depende de como Android 15/HyperOS trata o keyguard e as APIs de sessão.
 
 Links: documentação Android `VoiceInteractionService` e `VoiceInteractionSession`; histórico no issue #3 do repositório JeanBorba/xauusd-mobile-signal.
+
+## Estado verificado em 09/11/2026
+
+- Compilação Gradle `assembleDebug`: **BUILD SUCCESSFUL**, APK debug independente de 2.494.310 bytes.
+- SHA-256: `B20F8AF5EA9DB3F10F8974BE656179FAA687E041103A9C8E54535A4C36E0219F`.
+- Caminho local: `app/build/outputs/apk/debug/app-debug.apk`.
+- A tentativa de instalação USB retornou **`INSTALL_FAILED_USER_RESTRICTED: Install canceled by user`**. O APK de laboratório **NÃO foi instalado**.
+- ADB continuou conectado com serial `463435ac`.
+- Assistente Android continuou `com.openai.chatgpt/com.openai.feature.assistant.impl.AssistantVoiceInteractionService`.
+- O JeanWake original seguiu instalado como `0.5.2-dev`.
+- Próxima etapa: com o proprietário segurando o aparelho desbloqueado, verificar se aparece um pedido para instalar por USB e, quando ele autorizar, repetir `adb install -r`. Se não surgir aviso, verificar em HyperOS `Configurações > Configurações adicionais > Opções do desenvolvedor > Instalar via USB`. Não contornar nem desativar outras proteções.
+- **Não houve troca do papel ASSISTANT**. Se houver teste futuro dessa troca, dependerá de consentimento explícito do usuário dentro da interface Android.
