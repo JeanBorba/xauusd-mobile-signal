@@ -11,7 +11,7 @@ index ddaae9f..653af02 100644
 +
 +jeanwake-build-*.log
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index a88b39c..11f798d 100644
+index a88b39c..b6cc8d6 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -39,11 +39,11 @@ android {
@@ -24,8 +24,8 @@ index a88b39c..11f798d 100644
          targetSdk = 36
 -        versionCode = 3
 -        versionName = "1.1.0"
-+        versionCode = 9
-+        versionName = "0.5.1-dev"
++        versionCode = 10
++        versionName = "0.5.2-dev"
          testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
          ndk {
              abiFilters += "arm64-v8a"
@@ -64,10 +64,10 @@ index 1adde1b..5cd0df2 100644
              android:name=".MainActivity"
              android:exported="true"
 diff --git a/app/src/main/java/com/desmond/gptwake/GptLauncher.java b/app/src/main/java/com/desmond/gptwake/GptLauncher.java
-index 5185302..2fa270c 100644
+index 5185302..6f18753 100644
 --- a/app/src/main/java/com/desmond/gptwake/GptLauncher.java
 +++ b/app/src/main/java/com/desmond/gptwake/GptLauncher.java
-@@ -14,7 +14,72 @@ public final class GptLauncher {
+@@ -14,7 +14,109 @@ public final class GptLauncher {
      private static final ComponentName GPT_VOICE_COMPONENT = new ComponentName(
              GPT_PACKAGE, "com.openai.voice.assistant.AssistantActivity");
  
@@ -85,6 +85,43 @@ index 5185302..2fa270c 100644
 +     * Users may enable ChatGPT > Settings > Voice > Start with Voice.
 +     * An accepted startActivity is NOT proof of a voice conversation.
 +     */
++
++    /**
++     * Experimental public deep link with launcher provenance.
++     * Validated on Redmi Note 13 / ChatGPT Android via ADB:
++     * ChatGPT started VoiceModeForegroundService and live RECORD_AUDIO.
++     * URL and intent extras may change with ChatGPT app updates.
++     */
++    public static boolean launchChatGptVoice(Context context) {
++        try {
++            Intent intent = new Intent(Intent.ACTION_VIEW,
++                    Uri.parse("https://chat.com/?mode=voice"))
++                    .setPackage(GPT_PACKAGE)
++                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
++                            | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
++            intent.putExtra(
++                    "com.openai.feature.shortcut.impl.ShortcutInitializer.EXTRA_SHORTCUT",
++                    "launcher_shortcut");
++            android.content.pm.ResolveInfo target =
++                    context.getPackageManager().resolveActivity(intent,
++                            PackageManager.MATCH_DEFAULT_ONLY);
++            if (target == null || target.activityInfo == null
++                    || !target.activityInfo.exported
++                    || !GPT_PACKAGE.equals(target.activityInfo.packageName)) {
++                L.i("JEANWAKE_VOICE_LINK_NO_PUBLIC_HANDLER");
++                return false;
++            }
++            L.i("JEANWAKE_VOICE_LINK_REQUEST target=" + target.activityInfo.name);
++            context.startActivity(intent);
++            // This verifies dispatch only, not the existence of a Voice session.
++            L.i("JEANWAKE_VOICE_LINK_INTENT_SENT voiceSessionNotYetConfirmed=true");
++            return true;
++        } catch (Throwable error) {
++            L.e("JEANWAKE_VOICE_LINK_REQUEST_FAIL", error);
++            return false;
++        }
++    }
++
 +    public static boolean launchChatGptMain(Context context) {
 +        try {
 +            PackageManager pm = context.getPackageManager();
@@ -140,16 +177,16 @@ index 5185302..2fa270c 100644
          try {
              PackageManager pm = context.getPackageManager();
              ActivityInfo info = pm.getActivityInfo(
-@@ -49,6 +114,6 @@ public final class GptLauncher {
+@@ -49,6 +151,6 @@ public final class GptLauncher {
      }
  
      public static boolean launch(Context context) {
 -        return launchDirect(context) || launchDeeplink(context);
-+        return launchPublicAssist(context) || launchDeeplink(context);
++        return launchChatGptVoice(context) || launchChatGptMain(context);
      }
  }
 diff --git a/app/src/main/java/com/desmond/gptwake/WakeService.java b/app/src/main/java/com/desmond/gptwake/WakeService.java
-index fe395cd..e343a62 100644
+index fe395cd..e2c483b 100644
 --- a/app/src/main/java/com/desmond/gptwake/WakeService.java
 +++ b/app/src/main/java/com/desmond/gptwake/WakeService.java
 @@ -30,6 +30,17 @@ public class WakeService extends Service {
@@ -275,12 +312,12 @@ index fe395cd..e343a62 100644
 +            return;
 +        }
 +
-+        // The capture loop above has released the microphone. Use the public
-+        // Android ACTION_ASSIST handler for ChatGPT, not a private activity.
++        // The capture loop above has released the microphone. Use a public
++        // ChatGPT voice deep link; Android can still block background launches.
 +        bg.postDelayed(() -> {
-+            L.i("JEANWAKE_CHATGPT_MAIN_ATTEMPT");
-+            boolean requested = GptLauncher.launchChatGptMain(this);
-+            L.i("JEANWAKE_CHATGPT_MAIN_REQUESTED=" + requested
++            L.i("JEANWAKE_CHATGPT_VOICE_LINK_ATTEMPT");
++            boolean requested = GptLauncher.launchChatGptVoice(this);
++            L.i("JEANWAKE_CHATGPT_VOICE_LINK_REQUESTED=" + requested
 +                    + " voiceSessionNotYetConfirmed=true");
 +            bg.postDelayed(() ->
 +                L.i("JEANWAKE_CHATGPT_VOICE_PROBE voiceConfirmed="
