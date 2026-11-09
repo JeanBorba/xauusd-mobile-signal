@@ -104,6 +104,20 @@ public final class PortugueseSetupActivity extends Activity {
                 + "ative Configuracoes > Voz > Iniciar com voz, se esta opcao "
                 + "estiver disponivel. A OpenAI informa que ela funciona "
                 + "para conversas novas ou vazias.", 15);
+        addText(content,
+                "Nova rota experimental: um link de voz com a identificacao "
+                + "do atalho oficial iniciou o microfone do ChatGPT por ADB. "
+                + "Vamos testar dentro do JeanWake.", 15);
+        addButton(content, "Testar VOZ do ChatGPT (novo)", v -> {
+            if (WakeService.isForegroundNow()) {
+                message("Primeiro pressione Stop no JeanWake");
+                return;
+            }
+            boolean accepted = GptLauncher.launchChatGptVoice(this);
+            message(accepted
+                    ? "Comando de voz enviado. Confira se a conversa iniciou."
+                    : "O Android recusou o link de voz.");
+        });
         addButton(content, "Testar abrir ChatGPT normalmente", v -> {
             if (WakeService.isForegroundNow()) {
                 message("Primeiro pressione Stop no JeanWake");
