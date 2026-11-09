@@ -99,6 +99,24 @@ public final class PortugueseSetupActivity extends Activity {
                 "Conversa do ChatGPT (experimental). A frase curta Ei, GPT "
                 + "pode ser confundida com falas comuns. Por padrao, nao abre "
                 + "nenhum outro aplicativo automaticamente.", 15);
+        addText(content,
+                "Antes de testar a abertura normal: abra o ChatGPT oficial e "
+                + "ative Configuracoes > Voz > Iniciar com voz, se esta opcao "
+                + "estiver disponivel. A OpenAI informa que ela funciona "
+                + "para conversas novas ou vazias.", 15);
+        addButton(content, "Testar abrir ChatGPT normalmente", v -> {
+            if (WakeService.isForegroundNow()) {
+                message("Primeiro pressione Stop no JeanWake");
+                return;
+            }
+            boolean accepted = GptLauncher.launchChatGptMain(this);
+            message(accepted
+                    ? "Abertura solicitada. Verifique se a voz comecou."
+                    : "Nao foi possivel abrir o ChatGPT.");
+        });
+        addText(content,
+                "O botao antigo de assistente nao iniciou voz neste telefone. "
+                + "Mantido somente como diagnostico.", 14);
         addButton(content, "Testar abertura do assistente ChatGPT", v -> {
             if (WakeService.isForegroundNow()) {
                 message("Pressione Stop no JeanWake antes do teste de abertura");
@@ -110,7 +128,7 @@ public final class PortugueseSetupActivity extends Activity {
                     : "O Android nao aceitou o comando de assistente.");
         });
         autoLaunchButton = addButton(content,
-                "Ativar abertura automatica (experimental)", v -> {
+                "Ativar abertura automatica (apenas testes)", v -> {
             if (WakeService.isForegroundNow()) {
                 message("Pressione Stop no JeanWake antes de mudar esta opcao");
                 return;
@@ -185,7 +203,7 @@ public final class PortugueseSetupActivity extends Activity {
     private void refresh() {
         if (autoLaunchButton != null) {
             autoLaunchButton.setText(AssistLaunchOptions.autoLaunch(this)
-                ? "Desativar abertura automatica" : "Ativar abertura automatica (experimental)");
+                ? "Desativar abertura automatica" : "Ativar abertura automatica (apenas testes)");
         }
         state.setText("Português sem conta: " +
                 (VoskPtBrAssets.enabled(this) ? "ATIVADO" : "desligado") +
