@@ -20,6 +20,7 @@ public final class PortugueseSetupActivity extends Activity {
 
     private TextView state;
     private EditText keyInput;
+    private Button autoLaunchButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -94,6 +95,38 @@ public final class PortugueseSetupActivity extends Activity {
             refresh();
         });
 
+        addText(content,
+                "Conversa do ChatGPT (experimental). A frase curta Ei, GPT "
+                + "pode ser confundida com falas comuns. Por padrao, nao abre "
+                + "nenhum outro aplicativo automaticamente.", 15);
+        addButton(content, "Testar abertura do assistente ChatGPT", v -> {
+            if (WakeService.isForegroundNow()) {
+                message("Pressione Stop no JeanWake antes do teste de abertura");
+                return;
+            }
+            boolean accepted = GptLauncher.launchPublicAssist(this);
+            message(accepted
+                    ? "Comando enviado ao ChatGPT. Confira se a voz iniciou."
+                    : "O Android nao aceitou o comando de assistente.");
+        });
+        autoLaunchButton = addButton(content,
+                "Ativar abertura automatica (experimental)", v -> {
+            if (WakeService.isForegroundNow()) {
+                message("Pressione Stop no JeanWake antes de mudar esta opcao");
+                return;
+            }
+            boolean next = !AssistLaunchOptions.autoLaunch(this);
+            AssistLaunchOptions.setAutoLaunch(this, next);
+            message(next
+                    ? "Abertura automatica experimental habilitada"
+                    : "Abertura automatica desabilitada");
+            refresh();
+        });
+        addText(content,
+                "A abertura e uma solicitacao ao Android. Nao ha garantia "
+                + "de conversa por voz com a tela bloqueada. "
+                + "A opcao automatica e desativada inicialmente.", 14);
+
         addButton(content, "Importar frase Android (.ppn)", v -> pick(PICK_KEYWORD));
         addButton(content, "Importar modelo português (.pv)", v -> pick(PICK_LANGUAGE));
         addButton(content, "Abrir Picovoice Console", v -> {
@@ -140,15 +173,20 @@ public final class PortugueseSetupActivity extends Activity {
         return tv;
     }
 
-    private void addButton(LinearLayout parent, String label, View.OnClickListener listener) {
+    private Button addButton(LinearLayout parent, String label, View.OnClickListener listener) {
         Button button = new Button(this);
         button.setAllCaps(false);
         button.setText(label);
         button.setOnClickListener(listener);
         parent.addView(button);
+        return button;
     }
 
     private void refresh() {
+        if (autoLaunchButton != null) {
+            autoLaunchButton.setText(AssistLaunchOptions.autoLaunch(this)
+                ? "Desativar abertura automatica" : "Ativar abertura automatica (experimental)");
+        }
         state.setText("Português sem conta: " +
                 (VoskPtBrAssets.enabled(this) ? "ATIVADO" : "desligado") +
                 " | Modelo offline: " +
