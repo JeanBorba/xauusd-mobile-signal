@@ -11,7 +11,7 @@ index ddaae9f..653af02 100644
 +
 +jeanwake-build-*.log
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index a88b39c..808b21c 100644
+index a88b39c..ea470c2 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -39,11 +39,11 @@ android {
@@ -24,8 +24,8 @@ index a88b39c..808b21c 100644
          targetSdk = 36
 -        versionCode = 3
 -        versionName = "1.1.0"
-+        versionCode = 6
-+        versionName = "0.4.1-dev"
++        versionCode = 7
++        versionName = "0.4.2-dev"
          testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
          ndk {
              abiFilters += "arm64-v8a"
@@ -76,7 +76,7 @@ index 5185302..83420f9 100644
              PackageManager pm = context.getPackageManager();
              ActivityInfo info = pm.getActivityInfo(
 diff --git a/app/src/main/java/com/desmond/gptwake/WakeService.java b/app/src/main/java/com/desmond/gptwake/WakeService.java
-index fe395cd..e5d73de 100644
+index fe395cd..a05bc08 100644
 --- a/app/src/main/java/com/desmond/gptwake/WakeService.java
 +++ b/app/src/main/java/com/desmond/gptwake/WakeService.java
 @@ -30,6 +30,17 @@ public class WakeService extends Service {
@@ -122,7 +122,7 @@ index fe395cd..e5d73de 100644
          } else if (controller == null) {
              controller = new WakeController(this);
              controller.start();
-@@ -107,14 +136,97 @@ public class WakeService extends Service {
+@@ -107,14 +136,104 @@ public class WakeService extends Service {
          if (ack != null) {
              // ACK only once the capture loop is actually producing audio.
              bg.postDelayed(() -> {
@@ -194,6 +194,13 @@ index fe395cd..e5d73de 100644
 +        if (voskDetector != null) {
 +            voskDetector.stop();
 +        }
++        if (VoskPtBrAssets.enabled(this)) {
++            // The shortened phrase can be confused with ordinary speech.
++            // Test detection first; never start the ChatGPT app automatically yet.
++            L.i("JEANWAKE_VOSK_WAKE_TEST_ONLY_NO_LAUNCH");
++            bg.postDelayed(this::resumePortuguese, 3_000L);
++            return;
++        }
 +        // Release the microphone before ChatGPT can use it.
 +        bg.postDelayed(() -> {
 +            L.i("JEANWAKE_PT_BR_CHATGPT_DEEPLINK_ATTEMPT");
@@ -222,17 +229,17 @@ index fe395cd..e5d73de 100644
      private void ensureChannel() {
          NotificationManager nm = getSystemService(NotificationManager.class);
          NotificationChannel ch = new NotificationChannel(
-@@ -138,7 +250,8 @@ public class WakeService extends Service {
+@@ -138,7 +257,8 @@ public class WakeService extends Service {
  
          return new NotificationCompat.Builder(this, CH)
                  .setContentTitle(getString(R.string.notification_listening))
 -                .setContentText(WakeWordStore.phrase(this))
 +                .setContentText((PtBrSettings.isEnabled(this) || VoskPtBrAssets.enabled(this))
-+                        ? "Ei, ChatGPT (pt-BR)" : WakeWordStore.phrase(this))
++                        ? "Ei, GPT (pt-BR)" : WakeWordStore.phrase(this))
                  .setSmallIcon(R.drawable.ic_mic)
                  .setContentIntent(open)
                  .addAction(0, getString(R.string.action_stop_listening), stop)
-@@ -202,6 +315,16 @@ public class WakeService extends Service {
+@@ -202,6 +322,16 @@ public class WakeService extends Service {
      public void onDestroy() {
          L.i("MIC_FGS_DESTROY");
          FOREGROUND.set(false);
@@ -250,31 +257,36 @@ index fe395cd..e5d73de 100644
          controller = null;
          if (c != null) c.stop();
 diff --git a/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt b/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt
-index 203ac7d..03a244b 100644
+index 203ac7d..e071629 100644
 --- a/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt
 +++ b/app/src/main/java/com/desmond/gptwake/ui/GptWakeScreen.kt
-@@ -1,5 +1,9 @@
+@@ -1,5 +1,10 @@
  package com.desmond.gptwake.ui
  
 +import android.content.Intent
 +import com.desmond.gptwake.PortugueseSetupActivity
 +import com.desmond.gptwake.PtBrSettings
 +import com.desmond.gptwake.VoskPtBrAssets
++import com.desmond.gptwake.VoskDebugState
  import androidx.compose.animation.animateColorAsState
  import androidx.compose.foundation.horizontalScroll
  import androidx.compose.foundation.layout.Arrangement
-@@ -150,9 +154,16 @@ private fun ScreenBody(
+@@ -150,9 +155,20 @@ private fun ScreenBody(
          SetupBanner(compact, onContinue = { onRunStep(permissions.next) })
      }
  
 -    StatusCard(ui = ui, phrase = selection.phrase, compact = compact, onToggle = onToggleService)
 +    val ptSelected = PtBrSettings.isEnabled(context) || VoskPtBrAssets.enabled(context)
 +    StatusCard(ui = ui,
-+        phrase = if (ptSelected) "Ei, ChatGPT (pt-BR)" else selection.phrase,
++        phrase = if (ptSelected) "Ei, GPT (pt-BR)" else selection.phrase,
 +        compact = compact, onToggle = onToggleService)
 +    PortugueseSetupCard()
  
 -    if (wide) {
++    if (VoskPtBrAssets.enabled(context)) {
++        VoskDiagnosticCard(ui.debugText)
++    }
++
 +    if (ptSelected) {
 +        PermissionsCard(permissions, onRunStep)
 +        TestModeCard()
@@ -282,7 +294,7 @@ index 203ac7d..03a244b 100644
          // IntrinsicSize.Max fixes the row to the taller column, then the last card in each column
          // takes the slack with weight(1f) — so both columns end on the same line.
          Row(
-@@ -193,6 +204,32 @@ private fun ScreenBody(
+@@ -193,6 +209,60 @@ private fun ScreenBody(
      )
  }
  
@@ -296,7 +308,7 @@ index 203ac7d..03a244b 100644
 +            Text("Português brasileiro", style = MaterialTheme.typography.titleLarge)
 +            Text(
 +                when {
-+                    enabled -> "Modo pt-BR selecionado. A frase configurada é: Ei, ChatGPT."
++                    enabled -> "Modo pt-BR selecionado. A frase configurada é: Ei, GPT."
 +                    ready -> "Modelos prontos; abra a configuração para ativar o reconhecimento."
 +                    else -> "Use a opção gratuita Vosk sem conta ou configure " +
 +                        "Picovoice para uma palavra-chave personalizada."
@@ -306,8 +318,36 @@ index 203ac7d..03a244b 100644
 +            Button(onClick = {
 +                context.startActivity(Intent(context, PortugueseSetupActivity::class.java))
 +            }) {
-+                Text("Configurar Ei, ChatGPT")
++                Text("Configurar Ei, GPT")
 +            }
++        }
++    }
++}
++
++
++@Composable
++private fun VoskDiagnosticCard(debugText: String) {
++    var enabled by remember { mutableStateOf(VoskDebugState.enabled()) }
++    Card(Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large) {
++        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
++            Text("Teste da frase Ei, GPT", style = MaterialTheme.typography.titleLarge)
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                Text("Mostrar a interpretação local",
++                     modifier = Modifier.weight(1f))
++                Switch(checked = enabled, onCheckedChange = {
++                    enabled = it
++                    VoskDebugState.setEnabled(it)
++                })
++            }
++            Text("Ao ativar, aparece somente nesta tela a última frase interpretada. " +
++                 "Ela desaparece em 30 segundos; não é gravada, enviada ou publicada.",
++                 style = MaterialTheme.typography.bodySmall)
++            if (enabled) {
++                Text(if (debugText.isBlank()) "Aguardando fala..."
++                     else "Interpretou: " + debugText)
++            }
++            Text("Modo experimental: detectar sem abrir automaticamente o ChatGPT.",
++                 style = MaterialTheme.typography.bodySmall)
 +        }
 +    }
 +}
@@ -316,10 +356,26 @@ index 203ac7d..03a244b 100644
  
  @Composable
 diff --git a/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt b/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt
-index 865943c..8a32961 100644
+index 865943c..9b4b463 100644
 --- a/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt
 +++ b/app/src/main/java/com/desmond/gptwake/ui/WakeUiState.kt
-@@ -94,9 +94,14 @@ fun rememberWakeUiState(): State<WakeUiState> {
+@@ -16,6 +16,7 @@ import com.desmond.gptwake.Cfg
+ import com.desmond.gptwake.L
+ import com.desmond.gptwake.WakeController
+ import com.desmond.gptwake.WakeService
++import com.desmond.gptwake.VoskDebugState
+ import kotlinx.coroutines.delay
+ 
+ /**
+@@ -33,6 +34,7 @@ data class WakeUiState(
+     val counters: String,
+     val events: List<String>,
+     val evalMode: Boolean = false,
++    val debugText: String = "",
+ )
+ 
+ /** Which setup step is still outstanding. Ordered; the banner offers the first unsatisfied one. */
+@@ -94,12 +96,18 @@ fun rememberWakeUiState(): State<WakeUiState> {
              while (true) {
                  val controller = WakeService.controller()
                  value = WakeUiState(
@@ -336,6 +392,10 @@ index 865943c..8a32961 100644
                      counters = controller?.counters().orEmpty(),
                      events = recentEvents(),
                      evalMode = Cfg.evalMode,
++                    debugText = VoskDebugState.latest(),
+                 )
+                 delay(700)
+             }
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
 index f7f3b77..7c27ecb 100644
 --- a/app/src/main/res/values/strings.xml
