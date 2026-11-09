@@ -1,5 +1,17 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-08 — 0.5.0-dev: teste da rota pública ACTION_ASSIST
+
+- Identificada por ADB a atividade `com.openai.feature.assistant.impl.AssistantProxyActivity` como destino exportado de `android.intent.action.ASSIST` no pacote oficial `com.openai.chatgpt`.
+- Integração no JeanWake pelo método `GptLauncher.launchPublicAssist()`. O código não usa permissões privilegiadas ou a atividade interna `AssistantActivity` para o novo fluxo.
+- Botão de teste manual disponibilizado na configuração: **“Testar abertura do assistente ChatGPT”**. O usuário precisa parar a escuta antes do teste.
+- Nova preferência de abertura após detecção **desligada por padrão**, habilitada apenas por ação explícita do usuário devido aos falsos positivos já demonstrados da frase curta.
+- Registrado um teste ADB de `ACTION_ASSIST`: `am start` retornou `Status: ok` e nome da atividade `AssistantProxyActivity`, mas **sem nova captura do microfone do ChatGPT** e sem sessão de voz confirmada.
+- O aparelho negou a injeção de `KEYCODE_BACK` por permissão `INJECT_EVENTS`; não é necessária para o JeanWake e não será contornada.
+- `BUILD SUCCESSFUL` para 0.5.0-dev. APK SHA-256: `DA4F837A574DC4E0832E8E0ED3A2CC274338F1EB75F939945AD9F43147F2C0AC`.
+- `adb install -r`: **Success**, versão Android `0.5.0-dev` (versionCode 8). GPTWake original preservado.
+- **Pendente:** validação do botão dentro do aplicativo com a escuta parada, teste bloqueado somente se houver sucesso, observabilidade de áudio e redução de falsos positivos.
+
 ## 2026-11-08 — 0.4.2-dev: frase curta “Ei, GPT” em modo de teste
 
 - Usuário pediu a frase de ativação **“Ei, GPT”** no lugar de “Ei, ChatGPT”.
