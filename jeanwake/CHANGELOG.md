@@ -1,5 +1,16 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-08 — Teste da tela bloqueada: reconhecimento OK, atividade ABORTADA
+
+- Redmi Note 13 com `mWakefulness=Dozing` e `Keyguard showing=true`.
+- JeanWake 0.5.2-dev reconheceu “Ei, GPT” às **22:44:22**, **22:46:36**, **22:47:04**, interrompeu o Vosk e tentou abrir o link de voz.
+- As três verificações após 5 segundos: **`voiceConfirmed=false mode=NORMAL`**; ChatGPT não teve captura de microfone nova.
+- Android `ActivityTaskManager`: `BAL_ALLOW_SAW_PERMISSION` (sobreposição permitida), seguido de `Abort background activity starts from 10336` e **`result code=102` = `START_ABORTED`**. A solicitação feita pelo app **foi abortada**, apesar do método `startActivity()` não ter lançado exceção.
+- **Bloqueio constatado:** Android/HyperOS não iniciou a atividade pública de voz nesse estado de bloqueio. Causa exata da decisão do sistema exige investigação adicional; não se deve atribuir a falta de permissão, que está concedida.
+- O objetivo hands-free com a tela bloqueada **ainda não foi concluído**. Explorar integrações oficiais com ação explícita do usuário, respeitando keyguard/autenticação e restrições de segurança.
+- A opção de autolançamento é experimental e pode ativar por engano; usar **Stop** quando não estiver testando. Nenhuma gravação/transcrição pessoal foi publicada.
+- **Versão instalada permanece 0.5.2-dev**; apenas registros e documentação atualizados.
+
 ## 2026-11-08 — Integração automática completa COMPROVADA, tela desbloqueada
 
 - Usuário habilitou a abertura automática experimental em JeanWake 0.5.2-dev e confirmou que dizer **“Ei, GPT”** abriu a conversa por voz oficial.
