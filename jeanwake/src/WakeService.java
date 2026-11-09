@@ -210,12 +210,12 @@ public class WakeService extends Service {
             return;
         }
 
-        // The capture loop above has released the microphone. Use the public
-        // Android ACTION_ASSIST handler for ChatGPT, not a private activity.
+        // The capture loop above has released the microphone. Use a public
+        // ChatGPT voice deep link; Android can still block background launches.
         bg.postDelayed(() -> {
-            L.i("JEANWAKE_CHATGPT_MAIN_ATTEMPT");
-            boolean requested = GptLauncher.launchChatGptMain(this);
-            L.i("JEANWAKE_CHATGPT_MAIN_REQUESTED=" + requested
+            L.i("JEANWAKE_CHATGPT_VOICE_LINK_ATTEMPT");
+            boolean requested = GptLauncher.launchChatGptVoice(this);
+            L.i("JEANWAKE_CHATGPT_VOICE_LINK_REQUESTED=" + requested
                     + " voiceSessionNotYetConfirmed=true");
             bg.postDelayed(() ->
                 L.i("JEANWAKE_CHATGPT_VOICE_PROBE voiceConfirmed="
