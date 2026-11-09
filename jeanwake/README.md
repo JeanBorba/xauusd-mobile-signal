@@ -2,7 +2,7 @@
 
 Objetivo: permitir que o usuário diga **“Ei, ChatGPT”** em português brasileiro, inclusive com a tela bloqueada, no Redmi Note 13 com Android 15/HyperOS 2.
 
-**Estado em 08/11/2026: versão `0.4.0-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
+**Estado em 08/11/2026: versão `0.4.1-dev` compilada e instalada via ADB no aparelho.** Esta versão oferece uma opção **“Ativar português sem conta (Vosk)”**, que elimina a exigência de cadastro ou AccessKey do Picovoice. **Reconhecimento real da frase Vosk ainda não validado no celular**; a conversa de voz oficial do ChatGPT pode não iniciar, porque o Android bloqueia a atividade interna que era usada no GPTWake.
 
 ## O que está implementado
 
@@ -15,6 +15,12 @@ Objetivo: permitir que o usuário diga **“Ei, ChatGPT”** em português brasi
 - Opção Picovoice permanece disponível; uma AccessKey é protegida pelo Android Keystore, nunca incluída no APK.
 - Apenas **um motor** utiliza o microfone de cada vez.
 - Após detectar a frase, o aplicativo libera o microfone e tenta abrir um deep link do ChatGPT, **sem confirmação de que o modo de voz realmente abriu**.
+
+## Diagnóstico da versão 0.4.1-dev
+
+O primeiro teste com voz real não produziu o evento de ativação, embora o Vosk estivesse ouvindo. Em uma **amostra de voz sintetizada** em português brasileiro, o reconhecedor transcreveu “Ei, ChatGPT” como “chat z peter”. Por isso, o comparador da v0.4.1 aceita variantes fonéticas específicas e inclui diagnósticos de atividade de fala **sem salvar transcrições**. Foram aprovados 14 testes do comparador; o resultado com a voz real do usuário ainda precisa ser verificado.
+
+**APK de desenvolvimento instalado:** `0.4.1-dev`, versionCode `6`; SHA-256 `58025D955C2E953F89843D8A8F41B1978CC03C9D033603E3FFC495D1ED519209`.
 
 ## Status e próximos testes
 
