@@ -1,5 +1,17 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-08 — 0.5.1-dev: botão de abertura normal do ChatGPT
+
+- O usuário confirmou que o atalho oficial **Voz**, acessado por pressão longa no ícone do ChatGPT, abriu uma conversa de voz no Redmi Note 13.
+- Registro ADB do mesmo teste: `ChatGptDeeplinkActivity` e posteriormente `MainActivity`; o Android publicou o atalho dinâmico `id=Voice`, `shortLabel=Voz`.
+- `LauncherApps.hasShortcutHostPermission` é falso para JeanWake. O acesso ao atalho não é permitido diretamente a aplicativos comuns; manter launcher e assistente padrão sem modificações.
+- Recurso oficial **Start with Voice / Iniciar com voz** documentado pela OpenAI para versões móveis compatíveis, com início automático quando o ChatGPT abre em uma conversa nova ou vazia. Ainda não validado nas preferências do aparelho.
+- Adicionada rota `GptLauncher.launchChatGptMain()` usando `PackageManager.getLaunchIntentForPackage` e checagem de atividade exportada. Botão de teste **Testar abrir ChatGPT normalmente**, disponível somente quando a escuta do JeanWake está parada.
+- A abertura automática após wake é opt-in e segue desativada por padrão; mesmo quando habilitada, o código registra a tentativa separadamente de uma voz realmente iniciada. A entrada pública `ACTION_ASSIST` anterior não conseguiu iniciar voz no telefone, após três acionamentos.
+- Compilação Android: `BUILD SUCCESSFUL`; APK `0.5.1-dev`, versionCode `9`, SHA-256 `15CA96EBCF09B09F95F3DC5757E4A53502F5C27EAAD5AFA18C69D932E5DBDD22`.
+- ADB `install -r`: **Success**; Android confirmou `versionName=0.5.1-dev`, pacote GPTWake original preservado.
+- **Pendente:** usuário testar a configuração Iniciar com voz e o novo botão; abertura automática com tela bloqueada não está comprovada, e o detector pode gerar falsos positivos.
+
 ## 2026-11-08 — 0.5.0-dev: teste da rota pública ACTION_ASSIST
 
 - Identificada por ADB a atividade `com.openai.feature.assistant.impl.AssistantProxyActivity` como destino exportado de `android.intent.action.ASSIST` no pacote oficial `com.openai.chatgpt`.
