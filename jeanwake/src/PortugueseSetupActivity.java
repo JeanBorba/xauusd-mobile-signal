@@ -105,6 +105,18 @@ public final class PortugueseSetupActivity extends Activity {
                 + "estiver disponivel. A OpenAI informa que ela funciona "
                 + "para conversas novas ou vazias.", 15);
         addText(content,
+                "JeanWake 0.6.4: com a tela desbloqueada, a voz abre como antes. "
+                + "Com a tela bloqueada, o JeanWake mostra uma notificacao "
+                + "para tocar e abrir o ChatGPT, respeitando a seguranca "
+                + "do Android. Pode ser necessario desbloquear o aparelho. "
+                + "A ativacao pela frase curta e experimental.", 15);
+        addButton(content, "Testar notificacao de voz", v -> {
+            boolean posted = WakeVoiceNotification.show(this);
+            message(posted
+                    ? "Notificacao enviada. Confira o painel e toque para abrir a voz."
+                    : "Notificacao indisponivel: verifique as permissoes do Android.");
+        });
+        addText(content,
                 "Nova rota experimental: um link de voz com a identificacao "
                 + "do atalho oficial iniciou o microfone do ChatGPT por ADB. "
                 + "Vamos testar dentro do JeanWake.", 15);
@@ -142,7 +154,7 @@ public final class PortugueseSetupActivity extends Activity {
                     : "O Android nao aceitou o comando de assistente.");
         });
         autoLaunchButton = addButton(content,
-                "Ativar abertura automatica (apenas testes)", v -> {
+                "Ativar resposta ao Ei, GPT (experimental)", v -> {
             if (WakeService.isForegroundNow()) {
                 message("Pressione Stop no JeanWake antes de mudar esta opcao");
                 return;
@@ -150,8 +162,8 @@ public final class PortugueseSetupActivity extends Activity {
             boolean next = !AssistLaunchOptions.autoLaunch(this);
             AssistLaunchOptions.setAutoLaunch(this, next);
             message(next
-                    ? "Abertura automatica experimental habilitada"
-                    : "Abertura automatica desabilitada");
+                    ? "Resposta experimental habilitada (notificacao com tela bloqueada)"
+                    : "Resposta ao Ei, GPT desabilitada");
             refresh();
         });
         addText(content,
@@ -217,7 +229,7 @@ public final class PortugueseSetupActivity extends Activity {
     private void refresh() {
         if (autoLaunchButton != null) {
             autoLaunchButton.setText(AssistLaunchOptions.autoLaunch(this)
-                ? "Desativar abertura automatica" : "Ativar abertura automatica (apenas testes)");
+                ? "Desativar resposta ao Ei, GPT" : "Ativar resposta ao Ei, GPT (experimental)");
         }
         state.setText("Português sem conta: " +
                 (VoskPtBrAssets.enabled(this) ? "ATIVADO" : "desligado") +

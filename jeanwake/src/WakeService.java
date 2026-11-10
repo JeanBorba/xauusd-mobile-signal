@@ -202,26 +202,46 @@ public class WakeService extends Service {
         if (voskDetector != null) {
             voskDetector.stop();
         }
-        if (VoskPtBrAssets.enabled(this) && !AssistLaunchOptions.autoLaunch(this)) {
+        if (!AssistLaunchOptions.autoLaunch(this)) {
             // Short "Ei, GPT" has observed false positives on synthetic speech.
-            // Default remains test-only until user explicitly opts into auto launch.
+            // No external action unless the user has explicitly opted in.
             L.i("JEANWAKE_VOSK_WAKE_TEST_ONLY_NO_LAUNCH");
             bg.postDelayed(this::resumePortuguese, 3_000L);
             return;
         }
 
-        // The capture loop above has released the microphone. Use a public
-        // ChatGPT voice deep link; Android can still block background launches.
+        // Release the wake detector microphone before interacting with the
+        // Android assistant. Never use direct startActivity under keyguard.
         bg.postDelayed(() -> {
-            L.i("JEANWAKE_CHATGPT_VOICE_LINK_ATTEMPT");
-            boolean requested = GptLauncher.launchChatGptVoice(this);
-            L.i("JEANWAKE_CHATGPT_VOICE_LINK_REQUESTED=" + requested
-                    + " voiceSessionNotYetConfirmed=true");
-            bg.postDelayed(() ->
-                L.i("JEANWAKE_CHATGPT_VOICE_PROBE voiceConfirmed="
-                    + AudioStateMonitor.isVoiceConfirmed()
-                    + " mode=" + AudioStateMonitor.modeName(AudioStateMonitor.mode())),
-                5_000L);
+            android.app.KeyguardManager km =
+                    getSystemService(android.app.KeyguardManager.class);
+            android.os.PowerManager pm =
+                    getSystemService(android.os.PowerManager.class);
+            boolean locked = km != null && km.isKeyguardLocked();
+            boolean screenOff = pm != null && !pm.isInteractive();
+            L.i("JEANWAKE_WAKE_LAUNCH_ATTEMPT locked=" + locked
+                    + " screenOff=" + screenOff);
+            if (locked || screenOff) {
+                // Android and ChatGPT declined the secure-keyguard hands-free
+                // integration in tests 0.6.1-0.6.3. Respect the keyguard.
+                // A real user tap will open the PUBLIC ChatGPT voice link.
+                boolean posted = WakeVoiceNotification.show(this);
+                L.i("JEANWAKE_LOCKED_TAP_FALLBACK=" + posted);
+            } else {
+                // Already verified on the user's device with the screen unlocked.
+                boolean requested = GptLauncher.launchChatGptVoice(this);
+                L.i("JEANWAKE_CHATGPT_VOICE_LINK_REQUESTED=" + requested
+                        + " voiceSessionNotYetConfirmed=true");
+                if (!requested) WakeVoiceNotification.show(this);
+                bg.postDelayed(() -> {
+                    boolean voice = AudioStateMonitor.isVoiceConfirmed();
+                    L.i("JEANWAKE_CHATGPT_VOICE_PROBE voiceConfirmed=" + voice
+                            + " mode=" + AudioStateMonitor.modeName(
+                                    AudioStateMonitor.mode()));
+                    if (!voice) WakeVoiceNotification.show(this);
+                    else WakeVoiceNotification.cancel(this);
+                }, 5_000L);
+            }
         }, 350L);
         bg.postDelayed(this::resumePortuguese, 15_000L);
     }

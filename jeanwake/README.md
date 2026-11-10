@@ -1,3 +1,21 @@
+# Atualização validada — JeanWake 0.6.4-dev (09/11/2026)
+
+**Status atual:** no Redmi Note 13, o JeanWake reconhece “Ei, GPT” offline por Vosk. A conversa por voz do ChatGPT **funciona com a tela desbloqueada**. Com a tela bloqueada, a versão **0.6.4-dev** oferece uma **notificação acionável** (“Ei, GPT reconhecido” / “Abrir voz”) que depende de um toque e, se necessário, do desbloqueio do Android. **Não é abertura hands-free da voz oficial na tela bloqueada.**
+
+**Validação:** compilação Gradle de 0.6.4-dev concluída e instalação via ADB confirmada. Usuário testou a notificação: ao tocar, a conversa por voz do ChatGPT abriu. Registros em 09/11: `JEANWAKE_VOICE_TAP_FALLBACK_POSTED` às 21:35:46; `voiceConfirmed=true` às 21:37:26; app do ChatGPT registrou captura de microfone por aproximadamente **2min29s**. O teste integrado da notificação após a **frase falada com o aparelho bloqueado na própria 0.6.4** ainda deve ser repetido. São evidências distintas, sem presumir o que não foi observado.
+
+**Testes de integração Android:** a versão 0.6.1-lab mostrou `VoiceInteractionSession` sobre o keyguard, mas `startAssistantActivity` só iniciou a atividade do ChatGPT, sem voz. A 0.6.2-lab falhou com `ActivityNotFoundException` em `startVoiceActivity`; a 0.6.3-lab falhou com `SecurityException: Starting under voice control not allowed`. O laboratório é **experimental**, não o caminho recomendado para o usuário final. Não há bypass de tela de bloqueio.
+
+**Como usar:** 1) instalar JeanWake (Dev) 0.6.4-dev, 2) conceder permissões de microfone e notificação, 3) ativar Vosk offline e optar conscientemente por **Ativar resposta ao Ei, GPT (experimental)**, 4) tocar **Start**, 5) com a tela bloqueada, dizer “Ei, GPT”, procurar a notificação e tocar em **Abrir voz**; o Android pode exigir desbloqueio. Para teste manual, **Configurar Ei, GPT → Testar notificação de voz**. O recurso é desligado por padrão nesta versão, devido a possíveis ativações falsas. Use **Stop** para interromper.
+
+**Código:** `jeanwake/changes.patch` contém as alterações nos arquivos já controlados pelo repositório-base GPTWake; `jeanwake/src/` inclui os fontes adicionais e modificados, inclusive `WakeVoiceNotification.java`. Modelos Vosk grandes, credenciais, APKs e dados do aparelho não são publicados. A versão não é um assistente autónomo completo e depende do ChatGPT oficial instalado no dispositivo.
+
+**Ao terminar o diagnóstico:** no seletor oficial do Android, restaurar **ChatGPT** como assistente digital padrão; o JeanWake 0.6.4 não depende do Assistant Lab como assistente do sistema.
+
+---
+
+## Histórico anterior (versões experimentais)
+
 # JeanWake — assistente de voz Android (protótipo aberto)
 
 **Teste bloqueado em 08/11/2026: falhou na etapa Android, não no reconhecimento.** Com `mWakefulness=Dozing` e keyguard ativo, o JeanWake reconheceu “Ei, GPT” às 22:44:22, 22:46:36 e 22:47:04 e enviou a abertura da voz. As três tentativas tiveram `voiceConfirmed=false`. O Android mostrou `BAL_ALLOW_SAW_PERMISSION`, porém também `Abort background activity starts` e `result code=102` (`START_ABORTED`). Isso significa que a permissão de sobreposição foi aceita, **mas a atividade de voz foi abortada pelo sistema**. O APK 0.5.2-dev **não abre a conversa de voz com tela bloqueada** nas condições testadas. Não usar `startActivity` sem exceção como evidência de abertura. Recomendação durante o diagnóstico: usar **Stop** e desabilitar abertura automática fora dos testes devido a falsas ativações possíveis.

@@ -1,5 +1,17 @@
 # JeanWake — avanços e limitações
 
+## 2026-11-09 — JeanWake 0.6.4-dev: notificação validada com voz real
+
+- APK 0.6.4-dev versionCode=12 compilado com Gradle (BUILD SUCCESSFUL), instalado em Redmi Note 13 via `adb install -r` e verificado por `dumpsys package`. APK SHA-256: `F449640BF112E0362261D1D3C5CF8A25F72055722F9A22BF44F51824C80B3F3C` (artefato local de diagnóstico, não publicado).
+- Em tela desbloqueada, mantida abertura de voz por `ACTION_VIEW https://chat.com/?mode=voice` com pacote oficial `com.openai.chatgpt` e extra `launcher_shortcut`.
+- Em tela bloqueada, não tenta abrir outra atividade silenciosamente. Publica notificação “Ei, GPT reconhecido” com ação **Abrir voz** e `PendingIntent` público, respeitando autenticação do Android. Novo teste manual de notificação em **Configurar Ei, GPT**; tratamento de `POST_NOTIFICATIONS` e cooldown de 15s. A resposta à frase curta continua opt-in e é reinicializada desligada ao migrar para 0.6.4.
+- ADB confirmou a notificação `jeanwake_voice_pending`, com ação de abrir voz. Usuário confirmou a abertura por toque, com `voiceConfirmed=true mode=IN_COMMUNICATION` e `RECORD_AUDIO` do ChatGPT por **2min29s**. Confirmou-se a alternativa funcional de **um toque**, não a abertura hands-free sobre o keyguard.
+- Os 20 testes do matcher offline passaram. O percurso completo da frase falada até a notificação na própria 0.6.4 ainda requer teste de aceitação separado.
+- V0.6.1-0.6.3 Lab: sessão nativa no keyguard funcionou, mas ChatGPT não iniciou voz. Exceções específicas nas tentativas `startVoiceActivity`: `ActivityNotFoundException` (0.6.2) e `SecurityException: Starting under voice control not allowed` (0.6.3). Lab é mantido para reproduzir diagnóstico, não para uso normal.
+- Nenhuma tentativa de contornar keyguard, editar APK do ChatGPT ou usar permissões privilegiadas. O usuário deve restaurar o ChatGPT como assistente padrão após os testes.
+
+
+
 ## 2026-11-08 — Teste da tela bloqueada: reconhecimento OK, atividade ABORTADA
 
 - Redmi Note 13 com `mWakefulness=Dozing` e `Keyguard showing=true`.

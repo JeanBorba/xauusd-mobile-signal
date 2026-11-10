@@ -1,3 +1,15 @@
+# JeanWake Assistant Lab 0.6.3-lab — resultado do experimento (09/11/2026)
+
+**Estado:** laboratório independente instalado e testado no Redmi Note 13. O usuário selecionou-o temporariamente como assistente padrão pelo próprio seletor oficial do Android. O ADB confirmou `VoiceInteractionService` ativo e `VoiceInteractionSession` mostrada com `keyguard=true` após reconhecimento offline “Ei, GPT” pelo aplicativo principal.
+
+**Resultados:** 0.6.1 `startAssistantActivity` enviou o link e o Android criou atividades do ChatGPT, porém a conversa por voz não iniciou com bloqueio. 0.6.2 `startVoiceActivity` falhou por `ActivityNotFoundException` (link não atende à categoria `VOICE`). 0.6.3 localizou o handler público exportado `ChatGptDeeplinkActivity`, mas a operação foi recusada com `SecurityException: Starting under voice control not allowed`. Todos esses testes tiveram `voiceConfirmed=false`. **Não declarar suporte a início hands-free da voz oficial do ChatGPT no keyguard.**
+
+**Solução adotada:** JeanWake **0.6.4-dev** principal usa notificação acionável com toque/autenticação exigida pelo Android; laboratório **não é necessário** para essa alternativa. O projeto Lab não reconhece fala por conta própria e não deve ser tratado como aplicativo pronto de assistente. A opção alternativa de abertura automática experimental da 0.6.3 fica desligada por padrão. Restaurar ChatGPT como assistente padrão no seletor Android depois dos testes.
+
+---
+
+## Documentação do experimento inicial (0.6.0)
+
 # JeanWake Assistant Lab — versão 0.6.0-lab
 
 **Aplicativo separado e experimental**, com applicationId `br.com.jeanborba.assistantlab`. Não substitui nem modifica o APK JeanWake 0.5.2-dev, nem o aplicativo oficial do ChatGPT.

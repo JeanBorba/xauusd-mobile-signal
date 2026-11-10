@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="br.com.jeanborba.assistantlab.permission.REQUEST_SESSION"
+        android:protectionLevel="signature" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <queries>
         <package android:name="com.openai.chatgpt" />
@@ -33,6 +35,14 @@
             android:process=":session"
             android:exported="true"
             android:permission="android.permission.BIND_VOICE_INTERACTION" />
+        <receiver
+            android:name=".WakeBridgeReceiver"
+            android:exported="true"
+            android:permission="br.com.jeanborba.assistantlab.permission.REQUEST_SESSION">
+            <intent-filter>
+                <action android:name="br.com.jeanborba.assistantlab.action.WAKE_DETECTED" />
+            </intent-filter>
+        </receiver>
         <service
             android:name=".LabRecognitionService"
             android:exported="true"

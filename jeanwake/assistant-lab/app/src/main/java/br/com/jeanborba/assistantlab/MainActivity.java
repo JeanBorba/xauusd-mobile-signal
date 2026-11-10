@@ -1,6 +1,7 @@
 package br.com.jeanborba.assistantlab;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.role.RoleManager;
 import android.content.Intent;
 import android.os.Bundle;
@@ -30,7 +31,7 @@ public final class MainActivity extends Activity {
         scroll.addView(root);
 
         TextView title = new TextView(this);
-        title.setText("JeanWake Assistant Lab 0.6.0");
+        title.setText("JeanWake Assistant Lab 0.6.3");
         title.setTextSize(24);
         root.addView(title);
 
@@ -64,6 +65,27 @@ public final class MainActivity extends Activity {
                     "Primeiro selecione este app como assistente padrão");
         });
 
+        addButton(root, "Testar componente público explícito (experimental)", () -> {
+            if (LabOptions.autoChatGpt(this)) {
+                LabOptions.setAutoChatGpt(this, false);
+                toast("Abertura automática desativada");
+                refresh();
+            } else {
+                new AlertDialog.Builder(this)
+                        .setTitle("Novo experimento: atividade pública explícita")
+                        .setMessage("A v0.6.2 falhou porque startVoiceActivity adiciona "
+                                + "a categoria VOICE, que o link do ChatGPT não registra. "
+                                + "Agora tentaremos a atividade pública exportada explicitamente, "
+                                + "sem acessar componentes privados. Pode falhar "
+                                + "e a frase curta pode ativar por engano. "
+                                + "A opção está desligada por padrão nesta versão.")
+                        .setNegativeButton("Cancelar", null)
+                        .setPositiveButton("Ativar teste alternativo", (dialog, which) -> {
+                            LabOptions.setAutoChatGpt(this, true);
+                            refresh();
+                        }).show();
+            }
+        });
         addButton(root, "Gerenciar assistente padrão / restaurar ChatGPT", () -> {
             try {
                 startActivity(new Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS));
@@ -100,6 +122,7 @@ public final class MainActivity extends Activity {
         status.setText("Role ASSISTANT disponível: " + available
                 + "\nJeanWake Lab selecionado: " + held
                 + "\nVoiceInteractionService ativo: " + active
+                + "\nAlternativa explícita ativa: " + LabOptions.autoChatGpt(this)
                 + "\n\nNunca altere o assistente sem uma decisão consciente. "
                 + "Para restaurar o ChatGPT, use o botão de gerenciamento.");
         Log.i(JeanWakeVoiceService.TAG,

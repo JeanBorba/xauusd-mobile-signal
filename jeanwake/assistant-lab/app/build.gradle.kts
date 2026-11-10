@@ -8,8 +8,8 @@ android {
         applicationId = "br.com.jeanborba.assistantlab"
         minSdk = 32
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.6.0-lab"
+        versionCode = 4
+        versionName = "0.6.3-lab"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
